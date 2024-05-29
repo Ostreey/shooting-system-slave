@@ -60,7 +60,6 @@ class PiezoSensor {
    
     void update() {
       int piezoValue = analogRead(pin);
-      Serial.println(piezoValue);
 
       if (cnt > 50) {
         if (piezoValue > threshold) {
