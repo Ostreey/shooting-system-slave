@@ -21,9 +21,10 @@ float temp;
 
 bool deviceConnected = false;
 
-const int ledPin = 2;     // Digital pin for the LED
+const int activeLed = 22;
+const int connectedLed = 2;
 
-PiezoSensor sensor(15, 400);
+PiezoSensor sensor(27, 400);
 
 
 #define SERVICE_UUID1 "91bad492-b950-4226-aa2b-4ede9fa42f59"
@@ -42,7 +43,7 @@ class WriteCallbacks: public BLECharacteristicCallbacks {
     Serial.println(value.c_str());
     // Handle the received value
     if (value == "start") {
-      digitalWrite(ledPin, HIGH);
+      digitalWrite(activeLed, LOW);
     }
   }
 };
@@ -53,14 +54,16 @@ class WriteCallbacks: public BLECharacteristicCallbacks {
 class MyServerCallbacks: public BLEServerCallbacks {
   void onConnect(BLEServer* pServer) {
     deviceConnected = true;
+    digitalWrite(connectedLed, HIGH); 
   };
   void onDisconnect(BLEServer* pServer) {
     deviceConnected = false;
+    digitalWrite(connectedLed, LOW); 
   }
 };
 
 void ledOff() {
-  digitalWrite(ledPin, LOW); 
+  digitalWrite(activeLed, HIGH); 
   if (deviceConnected) {
   
     piezoCharateristic.setValue("got hit");
@@ -77,8 +80,10 @@ void setup() {
   Serial.begin(9600);
   Serial.println("Start");
 
- pinMode(ledPin, OUTPUT);
-  digitalWrite(ledPin, LOW); 
+ pinMode(activeLed, OUTPUT);
+  digitalWrite(activeLed, LOW); 
+  pinMode(connectedLed, OUTPUT);
+  digitalWrite(connectedLed, LOW); 
 
   sensor.begin();
 
