@@ -12,27 +12,30 @@
 #define temperatureCelsius
 
 //BLE server name
-#define bleServerName1 "BME280_ESP32"
+#define bleServerName1 "SLAVE_1"
 #define bleServerName2 "SLAVE_2"
+#define bleServerName3 "SLAVE_3"
 
-int sensorNumber = 2;
+int sensorNumber = 1;
 
 float temp;
 
 bool deviceConnected = false;
 
-const int activeLed = 22;
-const int connectedLed = 2;
+const int activeLed = 2;
+const int connectedLed = 26;
 
-PiezoSensor sensor(27, 400);
+PiezoSensor sensor(25, 400);
 
 
 #define SERVICE_UUID1 "91bad492-b950-4226-aa2b-4ede9fa42f59"
 #define SERVICE_UUID2 "91bad492-b950-4226-aa2b-4ede9fa42f51"
+#define SERVICE_UUID3 "91bad492-b950-4226-aa2b-4ede9fa42333"
 #define CHARACTERISTIC1 "cba1d466-344c-4be3-ab3f-189f80dd7518"
 #define CHARACTERISTIC2 "cba1d466-344c-4be3-ab3f-189f80dd7511"
+#define CHARACTERISTIC3 "cba1d466-344c-4be3-ab3f-189f80dd7333"
 
-  BLECharacteristic piezoCharateristic(CHARACTERISTIC2, BLECharacteristic::PROPERTY_NOTIFY| BLECharacteristic::PROPERTY_WRITE);
+  BLECharacteristic piezoCharateristic(CHARACTERISTIC1, BLECharacteristic::PROPERTY_NOTIFY| BLECharacteristic::PROPERTY_WRITE);
   BLEDescriptor piezoDescriptor(BLEUUID((uint16_t)0x2902));
 
 
@@ -43,7 +46,7 @@ class WriteCallbacks: public BLECharacteristicCallbacks {
     Serial.println(value.c_str());
     // Handle the received value
     if (value == "start") {
-      digitalWrite(activeLed, LOW);
+      digitalWrite(connectedLed, LOW);
     }
   }
 };
@@ -55,15 +58,27 @@ class MyServerCallbacks: public BLEServerCallbacks {
   void onConnect(BLEServer* pServer) {
     deviceConnected = true;
     digitalWrite(connectedLed, HIGH); 
+    delay(200);
+    digitalWrite(connectedLed, LOW);
+    delay(200);
+    digitalWrite(connectedLed, HIGH);
+    delay(200);
+    digitalWrite(connectedLed, LOW);
+    delay(200);
+    digitalWrite(connectedLed, HIGH);
+    delay(200);
+    digitalWrite(connectedLed, LOW);
+    delay(200);
+    digitalWrite(connectedLed, HIGH);
   };
   void onDisconnect(BLEServer* pServer) {
     deviceConnected = false;
-    digitalWrite(connectedLed, LOW); 
+     pServer->getAdvertising()->start();
   }
 };
 
 void ledOff() {
-  digitalWrite(activeLed, HIGH); 
+  digitalWrite(connectedLed, HIGH); 
   if (deviceConnected) {
   
     piezoCharateristic.setValue("got hit");
@@ -83,7 +98,7 @@ void setup() {
  pinMode(activeLed, OUTPUT);
   digitalWrite(activeLed, LOW); 
   pinMode(connectedLed, OUTPUT);
-  digitalWrite(connectedLed, LOW); 
+  digitalWrite(connectedLed, HIGH); 
 
   sensor.begin();
 
@@ -93,6 +108,9 @@ void setup() {
   } else if (sensorNumber == 2){
     BLEDevice::init(bleServerName2);
   } 
+  else if (sensorNumber == 3){
+    BLEDevice::init(bleServerName3);
+  }
   
 
   // Create the BLE Server
@@ -105,6 +123,8 @@ void setup() {
     piezoService = pServer->createService(SERVICE_UUID1);
   } else if (sensorNumber == 2){
     piezoService = pServer->createService(SERVICE_UUID2);
+  } else if (sensorNumber == 3){
+    piezoService = pServer->createService(SERVICE_UUID3);
   }
 
     piezoService->addCharacteristic(&piezoCharateristic);
@@ -123,14 +143,21 @@ void setup() {
   } else if (sensorNumber == 2){
     pAdvertising->addServiceUUID(SERVICE_UUID2);
   }
+  else if (sensorNumber == 3){
+    pAdvertising->addServiceUUID(SERVICE_UUID3);
+  }
   pServer->getAdvertising()->start();
   Serial.println("Waiting a client connection to notify...");
 }
 
 void loop() {
-  if (deviceConnected) {
-   piezoCharateristic.setValue("working - 2");
-   piezoCharateristic.notify();
+  
+
+  if (!deviceConnected) {
+    digitalWrite(connectedLed, LOW); 
+    delay(500);
+    digitalWrite(connectedLed, HIGH);
+    delay(500);
   }
-  delay(5000);
+  delay(100);
 }
