@@ -77,13 +77,15 @@ class MyServerCallbacks: public BLEServerCallbacks {
   }
 };
 
-void ledOff() {
+void ledOff(int piezoValue) {
   digitalWrite(connectedLed, HIGH); 
   if (deviceConnected) {
   
-    piezoCharateristic.setValue("got hit");
-    piezoCharateristic.notify();
-    Serial.println("Sent 'got hit' notification.");
+    String valueToSend = String(piezoValue); // Convert to String
+    piezoCharateristic.setValue(valueToSend.c_str()); // Set the value
+    piezoCharateristic.notify(); // Send the notification
+   Serial.print("Sent piezo value: ");
+    Serial.println(valueToSend);
   } else {
     Serial.println("Device not connected, cannot send notification.");
   }

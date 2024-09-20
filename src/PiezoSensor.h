@@ -4,7 +4,8 @@
 #include <Arduino.h>
 
 
-typedef void (*HitCallback)();
+typedef void (*HitCallback)(int piezoValue);
+
 
 class PiezoSensor {
   private:
@@ -66,7 +67,7 @@ class PiezoSensor {
         if (piezoValue > threshold) {
              Serial.println(piezoValue);
           if (callback) {
-            callback();
+              callback(piezoValue);
           }
         }
       } else {
