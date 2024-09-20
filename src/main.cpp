@@ -35,8 +35,14 @@ PiezoSensor sensor(25, 400);
 #define CHARACTERISTIC2 "cba1d466-344c-4be3-ab3f-189f80dd7511"
 #define CHARACTERISTIC3 "cba1d466-344c-4be3-ab3f-189f80dd7333"
 
-  BLECharacteristic piezoCharateristic(CHARACTERISTIC1, BLECharacteristic::PROPERTY_NOTIFY| BLECharacteristic::PROPERTY_WRITE);
-  BLEDescriptor piezoDescriptor(BLEUUID((uint16_t)0x2902));
+ // BLECharacteristic piezoCharateristic(CHARACTERISTIC2, BLECharacteristic::PROPERTY_NOTIFY| BLECharacteristic::PROPERTY_WRITE);
+  //BLEDescriptor piezoDescriptor(BLEUUID((uint16_t)0x2902));
+
+BLECharacteristic *piezoCharacteristic;
+BLEDescriptor *piezoDescriptor;
+BLEService *piezoService;
+BLEServer *pServer;
+
 
 
 class WriteCallbacks: public BLECharacteristicCallbacks {
@@ -82,8 +88,8 @@ void ledOff(int piezoValue) {
   if (deviceConnected) {
   
     String valueToSend = String(piezoValue); // Convert to String
-    piezoCharateristic.setValue(valueToSend.c_str()); // Set the value
-    piezoCharateristic.notify(); // Send the notification
+     piezoCharacteristic->setValue(valueToSend.c_str());
+    piezoCharacteristic->notify();
    Serial.print("Sent piezo value: ");
     Serial.println(valueToSend);
   } else {
@@ -93,63 +99,73 @@ void ledOff(int piezoValue) {
 }
 
 void setup() {
-
   Serial.begin(9600);
   Serial.println("Start");
-
- pinMode(activeLed, OUTPUT);
+  Serial.print("device number: ");
+  Serial.println(sensorNumber);
+  pinMode(activeLed, OUTPUT);
   digitalWrite(activeLed, LOW); 
   pinMode(connectedLed, OUTPUT);
   digitalWrite(connectedLed, HIGH); 
 
   sensor.begin();
 
-  // Create the BLE Device
+  // Initialize BLE Device
   if(sensorNumber == 1){
     BLEDevice::init(bleServerName1);
   } else if (sensorNumber == 2){
     BLEDevice::init(bleServerName2);
-  } 
-  else if (sensorNumber == 3){
+  } else if (sensorNumber == 3){
     BLEDevice::init(bleServerName3);
   }
-  
 
   // Create the BLE Server
-  BLEServer *pServer = BLEDevice::createServer();
+  pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
 
-  // Create the BLE Service
-  BLEService *piezoService;
+  // Create the BLE Service and Characteristic
+ 
+
   if(sensorNumber == 1){
     piezoService = pServer->createService(SERVICE_UUID1);
+    piezoCharacteristic = piezoService->createCharacteristic(
+                            CHARACTERISTIC1,
+                            BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_WRITE
+                          );
   } else if (sensorNumber == 2){
     piezoService = pServer->createService(SERVICE_UUID2);
+    piezoCharacteristic = piezoService->createCharacteristic(
+                            CHARACTERISTIC2,
+                            BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_WRITE
+                          );
   } else if (sensorNumber == 3){
     piezoService = pServer->createService(SERVICE_UUID3);
+    piezoCharacteristic = piezoService->createCharacteristic(
+                            CHARACTERISTIC3,
+                            BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_WRITE
+                          );
   }
 
-    piezoService->addCharacteristic(&piezoCharateristic);
+  // Create and add the Descriptor
+  piezoDescriptor = new BLEDescriptor(BLEUUID((uint16_t)0x2902));
+  piezoCharacteristic->addDescriptor(piezoDescriptor);
+  piezoCharacteristic->setCallbacks(new WriteCallbacks());
 
-    piezoCharateristic.addDescriptor(&piezoDescriptor);
-    piezoCharateristic.setCallbacks(new WriteCallbacks());
- 
-  
   // Start the service
   piezoService->start();
- sensor.setCallback(ledOff);
+
   // Start advertising
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
   if(sensorNumber == 1){
     pAdvertising->addServiceUUID(SERVICE_UUID1);
   } else if (sensorNumber == 2){
     pAdvertising->addServiceUUID(SERVICE_UUID2);
-  }
-  else if (sensorNumber == 3){
+  } else if (sensorNumber == 3){
     pAdvertising->addServiceUUID(SERVICE_UUID3);
   }
   pServer->getAdvertising()->start();
-  Serial.println("Waiting a client connection to notify...");
+
+  Serial.println("Waiting for a client connection to notify...");
 }
 
 void loop() {
