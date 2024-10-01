@@ -16,7 +16,7 @@
 #define bleServerName2 "SLAVE_2"
 #define bleServerName3 "SLAVE_3"
 
-int sensorNumber = 1;
+int sensorNumber = 2;
 
 float temp;
 
@@ -103,29 +103,36 @@ void setup() {
   Serial.println("Start");
   Serial.print("device number: ");
   Serial.println(sensorNumber);
+
   pinMode(activeLed, OUTPUT);
   digitalWrite(activeLed, LOW); 
   pinMode(connectedLed, OUTPUT);
   digitalWrite(connectedLed, HIGH); 
 
   sensor.begin();
+  sensor.setCallback(ledOff);
 
-  // Initialize BLE Device
+  // Determine the device name based on sensorNumber
+  String deviceName;
   if(sensorNumber == 1){
-    BLEDevice::init(bleServerName1);
+    deviceName = bleServerName1;
+    Serial.print("Initialized as SLAVE_1 ");
   } else if (sensorNumber == 2){
-    BLEDevice::init(bleServerName2);
+    deviceName = bleServerName2;
+    Serial.print("Initialized as SLAVE_2 ");
   } else if (sensorNumber == 3){
-    BLEDevice::init(bleServerName3);
+    deviceName = bleServerName3;
+    Serial.print("Initialized as SLAVE_3 ");
   }
+
+  // Initialize BLE Device with the device name
+  BLEDevice::init(deviceName.c_str());
 
   // Create the BLE Server
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
 
   // Create the BLE Service and Characteristic
- 
-
   if(sensorNumber == 1){
     piezoService = pServer->createService(SERVICE_UUID1);
     piezoCharacteristic = piezoService->createCharacteristic(
@@ -146,24 +153,25 @@ void setup() {
                           );
   }
 
-  // Create and add the Descriptor
-  piezoDescriptor = new BLEDescriptor(BLEUUID((uint16_t)0x2902));
-  piezoCharacteristic->addDescriptor(piezoDescriptor);
+  // Add Descriptor and Callbacks
+  piezoCharacteristic->addDescriptor(new BLE2902());
   piezoCharacteristic->setCallbacks(new WriteCallbacks());
 
   // Start the service
   piezoService->start();
 
-  // Start advertising
+  // Configure the advertising data
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  if(sensorNumber == 1){
-    pAdvertising->addServiceUUID(SERVICE_UUID1);
-  } else if (sensorNumber == 2){
-    pAdvertising->addServiceUUID(SERVICE_UUID2);
-  } else if (sensorNumber == 3){
-    pAdvertising->addServiceUUID(SERVICE_UUID3);
-  }
-  pServer->getAdvertising()->start();
+  pAdvertising->addServiceUUID(piezoService->getUUID());
+  pAdvertising->setScanResponse(true);
+
+  // Explicitly set the device name in the advertising data
+  BLEAdvertisementData advertisementData;
+  advertisementData.setName(deviceName.c_str());
+  pAdvertising->setAdvertisementData(advertisementData);
+
+  // Start advertising
+  BLEDevice::startAdvertising();
 
   Serial.println("Waiting for a client connection to notify...");
 }
