@@ -14,13 +14,15 @@ class PiezoSensor {
     int cnt;
     HitCallback callback;
     TaskHandle_t taskHandle;
+    unsigned long lastHitTime;      // Track time of last hit
+    const int debounceTime = 200;   // Debounce period in ms
 
  
     static void sensorTask(void *pvParameters) {
       PiezoSensor *sensor = static_cast<PiezoSensor*>(pvParameters);
       for (;;) {
         sensor->update(); 
-        vTaskDelay(20 / portTICK_PERIOD_MS);
+        vTaskDelay(5 / portTICK_PERIOD_MS);
       }
     }
 
@@ -33,6 +35,7 @@ class PiezoSensor {
         cnt = 0;
         callback = nullptr;
         taskHandle = NULL;
+        lastHitTime = 0;
       }
 
 
@@ -61,14 +64,16 @@ class PiezoSensor {
    
     void update() {
       int piezoValue = analogRead(pin);
+      unsigned long currentTime = millis();
     
       if (cnt > 50) {
        
-        if (piezoValue > threshold) {
-             Serial.println(piezoValue);
+        if (piezoValue > threshold&& (currentTime - lastHitTime > debounceTime)) {
+          Serial.println(piezoValue);
           if (callback) {
-              callback(piezoValue);
+            callback(piezoValue);
           }
+          lastHitTime = currentTime; 
         }
       } else {
         cnt++;

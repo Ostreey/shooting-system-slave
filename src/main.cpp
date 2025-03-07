@@ -1,4 +1,3 @@
-
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -6,6 +5,7 @@
 #include <Wire.h>
 #include <Arduino.h>
 #include "PiezoSensor.h"
+#include <WiFiManager.h>
 
 //Default Temperature is in Celsius
 //Comment the next line for Temperature in Fahrenheit
@@ -24,8 +24,9 @@ bool deviceConnected = false;
 
 const int activeLed = 2;
 const int connectedLed = 26;
+const int wifiButton = 15;  // New button pin definition
 
-PiezoSensor sensor(25, 400);
+PiezoSensor sensor(34, 400);
 
 
 #define SERVICE_UUID1 "91bad492-b950-4226-aa2b-4ede9fa42f59"
@@ -108,6 +109,7 @@ void setup() {
   digitalWrite(activeLed, LOW); 
   pinMode(connectedLed, OUTPUT);
   digitalWrite(connectedLed, HIGH); 
+  pinMode(wifiButton, INPUT_PULLUP);  // Initialize button pin
 
   sensor.begin();
   sensor.setCallback(ledOff);
@@ -125,65 +127,71 @@ void setup() {
     Serial.print("Initialized as SLAVE_3 ");
   }
 
-  // Initialize BLE Device with the device name
-  BLEDevice::init(deviceName.c_str());
+  // // Initialize BLE Device with the device name
+  // BLEDevice::init(deviceName.c_str());
 
-  // Create the BLE Server
-  pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
+  // // Create the BLE Server
+  // pServer = BLEDevice::createServer();
+  // pServer->setCallbacks(new MyServerCallbacks());
 
-  // Create the BLE Service and Characteristic
-  if(sensorNumber == 1){
-    piezoService = pServer->createService(SERVICE_UUID1);
-    piezoCharacteristic = piezoService->createCharacteristic(
-                            CHARACTERISTIC1,
-                            BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_WRITE
-                          );
-  } else if (sensorNumber == 2){
-    piezoService = pServer->createService(SERVICE_UUID2);
-    piezoCharacteristic = piezoService->createCharacteristic(
-                            CHARACTERISTIC2,
-                            BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_WRITE
-                          );
-  } else if (sensorNumber == 3){
-    piezoService = pServer->createService(SERVICE_UUID3);
-    piezoCharacteristic = piezoService->createCharacteristic(
-                            CHARACTERISTIC3,
-                            BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_WRITE
-                          );
-  }
+  // // Create the BLE Service and Characteristic
+  // if(sensorNumber == 1){
+  //   piezoService = pServer->createService(SERVICE_UUID1);
+  //   piezoCharacteristic = piezoService->createCharacteristic(
+  //                           CHARACTERISTIC1,
+  //                           BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_WRITE
+  //                         );
+  // } else if (sensorNumber == 2){
+  //   piezoService = pServer->createService(SERVICE_UUID2);
+  //   piezoCharacteristic = piezoService->createCharacteristic(
+  //                           CHARACTERISTIC2,
+  //                           BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_WRITE
+  //                         );
+  // } else if (sensorNumber == 3){
+  //   piezoService = pServer->createService(SERVICE_UUID3);
+  //   piezoCharacteristic = piezoService->createCharacteristic(
+  //                           CHARACTERISTIC3,
+  //                           BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_WRITE
+  //                         );
+  // }
 
-  // Add Descriptor and Callbacks
-  piezoCharacteristic->addDescriptor(new BLE2902());
-  piezoCharacteristic->setCallbacks(new WriteCallbacks());
+  // // Add Descriptor and Callbacks
+  // piezoCharacteristic->addDescriptor(new BLE2902());
+  // piezoCharacteristic->setCallbacks(new WriteCallbacks());
 
-  // Start the service
-  piezoService->start();
+  // // Start the service
+  // piezoService->start();
 
-  // Configure the advertising data
-  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(piezoService->getUUID());
-  pAdvertising->setScanResponse(true);
+  // // Configure the advertising data
+  // BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  // pAdvertising->addServiceUUID(piezoService->getUUID());
+  // pAdvertising->setScanResponse(true);
 
-  // Explicitly set the device name in the advertising data
-  BLEAdvertisementData advertisementData;
-  advertisementData.setName(deviceName.c_str());
-  pAdvertising->setAdvertisementData(advertisementData);
+  // // Explicitly set the device name in the advertising data
+  // BLEAdvertisementData advertisementData;
+  // advertisementData.setName(deviceName.c_str());
+  // pAdvertising->setAdvertisementData(advertisementData);
 
-  // Start advertising
-  BLEDevice::startAdvertising();
+  // // Start advertising
+  // BLEDevice::startAdvertising();
 
-  Serial.println("Waiting for a client connection to notify...");
+  // Serial.println("Waiting for a client connection to notify...");
 }
 
 void loop() {
-  
-
-  if (!deviceConnected) {
-    digitalWrite(connectedLed, LOW); 
-    delay(500);
-    digitalWrite(connectedLed, HIGH);
-    delay(500);
+  // Check if WiFi button is pressed
+  if (digitalRead(wifiButton) == LOW) {
+    Serial.println("WiFi button pressed, starting WiFiManager portal");
+    WiFiManager wifiManager;
+    wifiManager.startConfigPortal("ShootingSystemAP");  // Name of the config AP
   }
-  delay(100);
+
+  // if (!deviceConnected) {
+  //   digitalWrite(connectedLed, LOW); 
+  //   delay(500);
+  //   digitalWrite(connectedLed, HIGH);
+  
+  //   delay(500);
+  // }
+   delay(100);
 }
