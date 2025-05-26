@@ -22,7 +22,7 @@ class PiezoSensor {
       PiezoSensor *sensor = static_cast<PiezoSensor*>(pvParameters);
       for (;;) {
         sensor->update(); 
-        vTaskDelay(5 / portTICK_PERIOD_MS);
+        vTaskDelay(2 / portTICK_PERIOD_MS);
       }
     }
 
@@ -46,13 +46,14 @@ class PiezoSensor {
       }
 
      
-      xTaskCreate(
+      xTaskCreatePinnedToCore(
         sensorTask,          // Task function
         "Sensor Task",       // Task name
         10000,               // Stack size
         this,                // Parameters
-        1,                   // Priority
-        &taskHandle          // Task handle
+        3,                   // Priority (increased from 1 to 3)
+        &taskHandle,         // Task handle
+        PRO_CPU_NUM          // Run on Core 0
       );
     }
 
