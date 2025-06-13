@@ -33,9 +33,10 @@ const int ledBlue = 17;
 const int ledGreen = 18;
 const int ledRed = 19;
 const int wifiButton = 15; // New button pin definition
-const int batteryPin = 13; // Battery voltage measurement pin
+const int batteryPin = 33; // Battery voltage measurement pin
+const int ledPowerEnable = 4;
 
-PiezoSensor sensor(34, 400);
+PiezoSensor sensor(32, 400);
 
 
 BLECharacteristic *piezoCharacteristic;
@@ -147,6 +148,7 @@ void goToDeepSleep()
   isGoingToSleep = true;
     blinkLEDS();
       delay(3000 / portTICK_PERIOD_MS);
+      digitalWrite(ledPowerEnable, LOW);
   Serial.println("Going to deep sleep...");
   esp_sleep_enable_ext0_wakeup(GPIO_NUM_15, 0);
   esp_deep_sleep_start();
@@ -312,6 +314,8 @@ void setup()
   Serial.begin(115200);
   Serial.println("Start");
 
+  pinMode(ledPowerEnable, OUTPUT);
+  digitalWrite(ledPowerEnable, HIGH);
   pinMode(ledBlue, OUTPUT);
   digitalWrite(ledBlue, LOW);
   pinMode(ledGreen, OUTPUT);
