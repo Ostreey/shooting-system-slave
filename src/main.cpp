@@ -19,11 +19,17 @@
 #define CHARACTERISTIC "cba1d466-344c-4be3-ab3f-189f80dd75ff"
 #define BATTERY_CHARACTERISTIC "cba1d466-344c-4be3-ab3f-189f80dd76ff"
 
-
 // Add these constants for ADC calibration
 #define DEFAULT_VREF 1100         // Default reference voltage in mV
 #define ADC_SAMPLES 64            // Number of samples for averaging
 #define ADC_ATTEN ADC_ATTEN_DB_11 // 11dB attenuation for 0-3.3V range
+
+// Add these constants near the top with other definitions
+#define PWM_FREQUENCY 5000
+#define PWM_RESOLUTION 8 // 8-bit resolution (0-255)
+#define PWM_CHANNEL_RED 0
+#define PWM_CHANNEL_GREEN 1
+#define PWM_CHANNEL_BLUE 2
 
 float temp;
 
@@ -33,18 +39,17 @@ const int ledBlue = 17;
 const int ledGreen = 18;
 const int ledRed = 19;
 const int wifiButton = 15; // New button pin definition
-const int batteryPin = 33; // Battery voltage measurement pin
+const int batteryPin = 13; // Battery voltage measurement pin
 const int ledPowerEnable = 4;
 
-PiezoSensor sensor(32, 400);
-
+PiezoSensor sensor(34, 400);
 
 BLECharacteristic *piezoCharacteristic;
 BLECharacteristic *batteryCharacteristic;
 
 BLEService *piezoService;
 BLEServer *pServer;
- esp_adc_cal_characteristics_t adc_chars;
+esp_adc_cal_characteristics_t adc_chars;
 
 // Task handle for battery monitoring
 TaskHandle_t batteryTaskHandle = NULL;
@@ -52,32 +57,66 @@ TaskHandle_t batteryTaskHandle = NULL;
 // Add this task handle near the top with other global variables
 TaskHandle_t ledStatusTaskHandle = NULL;
 // Add these constants at the top with other definitions
-const int TURN_OFF_TIME = 2000; // 2 seconds for long press
-const int SECRET_PRESS_WINDOW = 2000; // 2 second window for secret combination
-const int SECRET_PRESS_COUNT = 3; // Number of presses needed for secret combination
-bool isWebPortalOpen = false,  isGoingToSleep = false;
+const int TURN_OFF_TIME = 2000;       // 2 seconds for long press
+const int SECRET_PRESS_WINDOW = 1000; // 2 second window for secret combination
+const int SECRET_PRESS_COUNT = 3;     // Number of presses needed for secret combination
+bool isWebPortalOpen = false, isGoingToSleep = false;
 // Add these variables in the global scope
 unsigned long lastPressTime = 0;
 int pressCount = 0;
+int brightness = 125;
+
+unsigned long hitTime = 0;
 
 // Add this enum before the WriteCallbacks class
-enum class BLECommand {
-    UNKNOWN,
-    START,
-    SLEEP,
-    BLINK,
-    GAME1,
-    // Add more commands as needed
+enum class BLECommand
+{
+  UNKNOWN,
+  START,
+  SLEEP,
+  BLINK,
+  GAME1,
+  SET_BRIGHTNESS, // New command for LED brightness
+};
+void ledOff(int piezoValue);
+void setLeds(bool on);
+
+// Add a struct to hold command and value
+struct BLECommandData
+{
+  BLECommand command;
+  int value;
 };
 
-// Helper function to convert string to BLECommand
-BLECommand stringToCommand(const std::string& value) {
-    if (value == "start") return BLECommand::START;
-    if (value == "sleep") return BLECommand::SLEEP;
-    if (value == "game1") return BLECommand::GAME1;
-    if (value == "blink") return BLECommand::BLINK;
-    return BLECommand::UNKNOWN;
+// Update the command parsing function
+BLECommandData parseCommand(const std::string &value)
+{
+  BLECommandData result = {BLECommand::UNKNOWN, 0};
+
+  // Check if the command starts with "b:"
+  if (value.substr(0, 2) == "b:")
+  {
+    result.command = BLECommand::SET_BRIGHTNESS;
+    result.value = std::stoi(value.substr(2));
+    return result;
+  }
+
+  // Handle valueless commands
+  if (value == "start")
+    result.command = BLECommand::START;
+  else if (value == "sleep")
+    result.command = BLECommand::SLEEP;
+  else if (value == "game1")
+    result.command = BLECommand::GAME1;
+  else if (value == "blink")
+    result.command = BLECommand::BLINK;
+
+  return result;
 }
+
+void ledOff(int piezoValue);
+
+
 void sendBatteryLevel(int percentage)
 {
   if (deviceConnected)
@@ -93,76 +132,92 @@ void sendBatteryLevel(int percentage)
   }
 }
 
-void blinkLEDS(){
-   for (int i = 0; i < 3; i++)
-    {
-      digitalWrite(ledRed, HIGH);
-      digitalWrite(ledGreen, HIGH);
-      digitalWrite(ledBlue, HIGH);
-      delay(200);
-      digitalWrite(ledRed, LOW);
-      digitalWrite(ledGreen, LOW);
-      digitalWrite(ledBlue, LOW);
-      delay(200);
-    }
+void blinkLEDS()
+{
+  for (int i = 0; i < 3; i++)
+  {
+    setLeds(true);
+    delay(200);
+    setLeds(false);
+    delay(200);
+  }
 }
 
-int getBatteryPercentage() {
+int getBatteryPercentage()
+{
   int percentage = 100;
- // Read multiple samples and average them
-    uint32_t adc_reading = 0;
-    for (int i = 0; i < ADC_SAMPLES; i++)
-    {
-      adc_reading += analogRead(batteryPin);
-    }
-    adc_reading /= ADC_SAMPLES;
+  // Read multiple samples and average them
+  uint32_t adc_reading = 0;
+  for (int i = 0; i < ADC_SAMPLES; i++)
+  {
+    adc_reading += analogRead(batteryPin);
+  }
+  adc_reading /= ADC_SAMPLES;
 
-    // Convert to voltage using calibration
-    uint32_t voltage_mv = esp_adc_cal_raw_to_voltage(adc_reading, &adc_chars);
-    float voltage = voltage_mv / 1000.0; // Convert to volts
+  // Convert to voltage using calibration
+  uint32_t voltage_mv = esp_adc_cal_raw_to_voltage(adc_reading, &adc_chars);
+  float voltage = voltage_mv / 1000.0; // Convert to volts
 
-    // Convert to actual battery voltage (multiply by 1.5 due to voltage divider)
-    float battery_voltage = voltage * 1.5;
+  // Convert to actual battery voltage (multiply by 1.5 due to voltage divider)
+  float battery_voltage = voltage * 1.5;
 
-    // Convert to percentage (assuming 4.2V is 100% and 3.6V is 0%)
-    percentage = map(battery_voltage * 100, 340, 420, 0, 100);
-    percentage = constrain(percentage, 0, 100);
+  // Convert to percentage (assuming 4.2V is 100% and 3.6V is 0%)
+  percentage = map(battery_voltage * 100, 340, 420, 0, 100);
+  percentage = constrain(percentage, 0, 100);
 
-    // // Send through BLE
-    // String valueToSend = String(percentage);
-    // Serial.print("Raw ADC: ");
-    // Serial.print(adc_reading);
-    // Serial.print(", Divider Voltage: ");
-    // Serial.print(voltage);
-    // Serial.print("V, Battery Voltage: ");
-    // Serial.print(battery_voltage);
-    // Serial.print("V, Percentage: ");
-    // Serial.print(percentage);
-    // Serial.println("%");
-    return percentage;
+  // // Send through BLE
+  // String valueToSend = String(percentage);
+  // Serial.print("Raw ADC: ");
+  // Serial.print(adc_reading);
+  // Serial.print(", Divider Voltage: ");
+  // Serial.print(voltage);
+  // Serial.print("V, Battery Voltage: ");
+  // Serial.print(battery_voltage);
+  // Serial.print("V, Percentage: ");
+  // Serial.print(percentage);
+  // Serial.println("%");
+  return percentage;
 }
-
 
 void goToDeepSleep()
 {
   isGoingToSleep = true;
-    blinkLEDS();
-      delay(3000 / portTICK_PERIOD_MS);
-      digitalWrite(ledPowerEnable, LOW);
+  blinkLEDS();
+  delay(3000 / portTICK_PERIOD_MS);
+  digitalWrite(ledPowerEnable, LOW);
   Serial.println("Going to deep sleep...");
   esp_sleep_enable_ext0_wakeup(GPIO_NUM_15, 0);
   esp_deep_sleep_start();
 }
 
+
+void setLeds(bool on)
+{
+  if (on)
+  {
+    ledcWrite(PWM_CHANNEL_RED, brightness);
+    ledcWrite(PWM_CHANNEL_GREEN, brightness);
+    ledcWrite(PWM_CHANNEL_BLUE, brightness);
+  }
+  else
+  {
+    ledcWrite(PWM_CHANNEL_RED, 0);
+    ledcWrite(PWM_CHANNEL_GREEN, 0);
+    ledcWrite(PWM_CHANNEL_BLUE, 0);
+  }
+}
+
+
 // Battery monitoring task
 void batteryMonitorTask(void *pvParameters)
 {
   // ADC calibration
- 
+
   esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN, ADC_WIDTH_BIT_12, DEFAULT_VREF, &adc_chars);
- 
+
   for (;;)
   {
+
     int percentage = getBatteryPercentage();
     sendBatteryLevel(percentage);
     if (percentage < 5 && !isWebPortalOpen)
@@ -174,27 +229,25 @@ void batteryMonitorTask(void *pvParameters)
   }
 }
 
-
 // Add this new task function before setup()
-void ledStatusTask(void *pvParameters) {
-    for (;;) {
-        if (!deviceConnected && !isGoingToSleep) {
-            digitalWrite(ledRed, LOW);
-            digitalWrite(ledGreen, LOW);
-            digitalWrite(ledBlue, LOW);
-            vTaskDelay(1000 / portTICK_PERIOD_MS);
-            digitalWrite(ledRed, HIGH);
-            digitalWrite(ledGreen, HIGH);
-            digitalWrite(ledBlue, HIGH);
-            vTaskDelay(1000 / portTICK_PERIOD_MS);
-             Serial.println("Device not connected");
-        } else {
-            vTaskDelay(100 / portTICK_PERIOD_MS); // Small delay when connected
-        }
+void ledStatusTask(void *pvParameters)
+{
+  for (;;)
+  {
+    if (!deviceConnected && !isGoingToSleep)
+    {
+      setLeds(false);
+      vTaskDelay(1000 / portTICK_PERIOD_MS);
+      setLeds(true);
+      vTaskDelay(1000 / portTICK_PERIOD_MS);
+      Serial.println("Device not connected");
     }
+    else
+    {
+      vTaskDelay(100 / portTICK_PERIOD_MS);
+    }
+  }
 }
-
-
 
 class WriteCallbacks : public BLECharacteristicCallbacks
 {
@@ -203,36 +256,39 @@ class WriteCallbacks : public BLECharacteristicCallbacks
     std::string value = pCharacteristic->getValue();
     Serial.print("Received value: ");
     Serial.println(value.c_str());
-    
-    BLECommand cmd = stringToCommand(value);
-    
-    switch (cmd) {
-        case BLECommand::START:
-            digitalWrite(ledRed, HIGH);
-            digitalWrite(ledGreen, HIGH);
-            digitalWrite(ledBlue, HIGH);
-            break;
-            
-        case BLECommand::SLEEP:
-            goToDeepSleep();
-            break;
 
-        case BLECommand::BLINK:
-            blinkLEDS();
-            break;
-            
-        case BLECommand::UNKNOWN:
-            Serial.println("Unknown command received");
-            break;
+    BLECommandData cmdData = parseCommand(value);
+
+    switch (cmdData.command)
+    {
+    case BLECommand::START:
+      hitTime = millis();
+      setLeds(true);
+      break;
+
+    case BLECommand::SLEEP:
+      goToDeepSleep();
+      break;
+
+    case BLECommand::BLINK:
+      blinkLEDS();
+      break;
+
+    case BLECommand::SET_BRIGHTNESS:
+      brightness = constrain(cmdData.value, 0, 255);
+      break;
+
+    
     }
   }
 };
 
-void initialBatteryTask(void *pvParameters) {
-    vTaskDelay(2000 / portTICK_PERIOD_MS); // Wait for connection to stabilize
-    int percentage = getBatteryPercentage();
-    sendBatteryLevel(percentage);
-    vTaskDelete(NULL); // Delete the task after it's done
+void initialBatteryTask(void *pvParameters)
+{
+  vTaskDelay(2000 / portTICK_PERIOD_MS); // Wait for connection to stabilize
+  int percentage = getBatteryPercentage();
+  sendBatteryLevel(percentage);
+  vTaskDelete(NULL); // Delete the task after it's done
 }
 
 // Setup callbacks onConnect and onDisconnect
@@ -253,21 +309,21 @@ class MyServerCallbacks : public BLEServerCallbacks
   }
 };
 
-
-
 void ledOff(int piezoValue)
 {
-  digitalWrite(ledRed, LOW);
-  digitalWrite(ledGreen, LOW);
-  digitalWrite(ledBlue, LOW);
+  setLeds(false);
   if (deviceConnected)
   {
-
-    String valueToSend = String(piezoValue); // Convert to String
-    piezoCharacteristic->setValue(valueToSend.c_str());
+    uint8_t data[4];
+    uint16_t timeInHundredths = (millis() - hitTime) / 10;
+    data[0] = piezoValue & 0xFF;
+    data[1] = piezoValue >> 8;
+    data[2] = timeInHundredths & 0xFF;
+    data[3] = timeInHundredths >> 8;
+    piezoCharacteristic->setValue(data, 4);
     piezoCharacteristic->notify();
     Serial.print("Sent piezo value: ");
-    Serial.println(valueToSend);
+    Serial.println(piezoValue);
   }
   else
   {
@@ -275,37 +331,34 @@ void ledOff(int piezoValue)
   }
 }
 
-void openWiFiPortal() {
-    // Stop BLE advertising before opening portal
-    BLEDevice::getAdvertising()->stop();
-    
-    // Visual indication
-    for (int i = 0; i < 5; i++) {
-        digitalWrite(ledBlue, LOW);
-        digitalWrite(ledGreen, LOW);
-        digitalWrite(ledRed, LOW);
-        delay(50);
-        digitalWrite(ledBlue, HIGH);
-        digitalWrite(ledGreen, HIGH);
-        digitalWrite(ledRed, HIGH);
-        delay(50);
-    }
-    
-    isWebPortalOpen = true;
-    Serial.println("Starting WiFiManager portal");
-    
-    WiFiManager wifiManager;
-    // Set timeout to 3 minutes (180 seconds)
-    wifiManager.setConfigPortalTimeout(180);
-    wifiManager.startConfigPortal("ShootingSystemAP");
-    
-    // After portal is closed
-    isWebPortalOpen = false;
-    
-    // Restart BLE advertising
-    BLEDevice::getAdvertising()->start();
-}
+void openWiFiPortal()
+{
+  // Stop BLE advertising before opening portal
+  BLEDevice::getAdvertising()->stop();
 
+  // Visual indication
+  for (int i = 0; i < 5; i++)
+  {
+    setLeds(false);
+    delay(50);
+    setLeds(true);
+    delay(50);
+  }
+
+  isWebPortalOpen = true;
+  Serial.println("Starting WiFiManager portal");
+
+  WiFiManager wifiManager;
+  // Set timeout to 3 minutes (180 seconds)
+  wifiManager.setConfigPortalTimeout(180);
+  wifiManager.startConfigPortal("ShootingSystemAP");
+
+  // After portal is closed
+  isWebPortalOpen = false;
+
+  // Restart BLE advertising
+  BLEDevice::getAdvertising()->start();
+}
 
 void setup()
 {
@@ -393,14 +446,24 @@ void setup()
 
   // In setup(), add this after creating the battery monitoring task
   xTaskCreatePinnedToCore(
-      ledStatusTask,    // Task function
-      "LEDStatus",      // Task name
-      2048,            // Stack size
-      NULL,            // Task parameters
-      1,               // Task priority
+      ledStatusTask,        // Task function
+      "LEDStatus",          // Task name
+      2048,                 // Stack size
+      NULL,                 // Task parameters
+      1,                    // Task priority
       &ledStatusTaskHandle, // Task handle
-      APP_CPU_NUM      // Run on Core 1
+      APP_CPU_NUM           // Run on Core 1
   );
+
+  // Configure PWM for LEDs
+  ledcSetup(PWM_CHANNEL_RED, PWM_FREQUENCY, PWM_RESOLUTION);
+  ledcSetup(PWM_CHANNEL_GREEN, PWM_FREQUENCY, PWM_RESOLUTION);
+  ledcSetup(PWM_CHANNEL_BLUE, PWM_FREQUENCY, PWM_RESOLUTION);
+
+  // Attach PWM channels to GPIO pins
+  ledcAttachPin(ledRed, PWM_CHANNEL_RED);
+  ledcAttachPin(ledGreen, PWM_CHANNEL_GREEN);
+  ledcAttachPin(ledBlue, PWM_CHANNEL_BLUE);
 }
 
 void loop()
@@ -416,17 +479,21 @@ void loop()
       pressStartTime = millis();
       buttonPressed = true;
       Serial.println("Button pressed");
-      
+
       // Handle secret combination
       unsigned long currentTime = millis();
-      if (currentTime - lastPressTime < SECRET_PRESS_WINDOW) {
+      if (currentTime - lastPressTime < SECRET_PRESS_WINDOW)
+      {
         pressCount++;
-        if (pressCount >= SECRET_PRESS_COUNT) {
+        if (pressCount >= SECRET_PRESS_COUNT)
+        {
           // Secret combination detected - open WiFi manager
           openWiFiPortal();
           pressCount = 0; // Reset press count
         }
-      } else {
+      }
+      else
+      {
         // Reset if too much time has passed
         pressCount = 1;
       }
