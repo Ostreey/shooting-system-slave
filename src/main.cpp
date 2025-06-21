@@ -375,6 +375,122 @@ void openWiFiPortal()
   BLEDevice::getAdvertising()->start();
 }
 
+// --- OTA CALLBACKS ---------------------------------------------------------
+class OTACommandCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* chr) override {
+    std::string cmd = chr->getValue();
+    if (cmd.rfind("START:", 0) == 0) {
+      otaFirmwareSize = atoi(cmd.substr(6).c_str());
+      if (Update.begin(otaFirmwareSize)) {
+        otaInProgress   = true;
+        otaReceivedSize = 0;
+        // Find the status characteristic and notify
+        BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+        if (otaService) {
+          BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+          if (statusChar) {
+            statusChar->setValue("READY");
+            statusChar->notify();
+            Serial.println("OTA: Ready to receive firmware");
+          }
+        }
+      } else {
+        BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+        if (otaService) {
+          BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+          if (statusChar) {
+            statusChar->setValue("ERROR:OTA_BEGIN");
+            statusChar->notify();
+            Serial.println("OTA: Failed to begin update");
+          }
+        }
+      }
+    }
+    else if (cmd == "END") {
+      if (Update.end(true)) {
+        BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+        if (otaService) {
+          BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+          if (statusChar) {
+            statusChar->setValue("SUCCESS");
+            statusChar->notify();
+            Serial.println("OTA: Update successful, restarting...");
+          }
+        }
+        delay(1000);
+        ESP.restart();
+      } else {
+        BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+        if (otaService) {
+          BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+          if (statusChar) {
+            statusChar->setValue("ERROR:OTA_END");
+            statusChar->notify();
+            Serial.println("OTA: Failed to end update");
+          }
+        }
+      }
+      otaInProgress = false;
+    }
+  }
+};
+
+class OTADataCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* chr) override {
+    if (!otaInProgress) return;
+    
+    std::string chunk = chr->getValue();
+    size_t chunkSize = chunk.size();
+    
+    // Sprawdź czy fragment nie jest za duży
+    if (chunkSize > OTA_CHUNK_SIZE) {
+      Serial.printf("OTA: Chunk too large (%d bytes), max is %d\n", chunkSize, OTA_CHUNK_SIZE);
+      BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+      if (otaService) {
+        BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+        if (statusChar) {
+          statusChar->setValue("ERROR:CHUNK_TOO_LARGE");
+          statusChar->notify();
+        }
+      }
+      return;
+    }
+    
+    if (Update.write((uint8_t*)chunk.data(), chunkSize) == chunkSize) {
+      otaReceivedSize += chunkSize;
+      int progress = (otaReceivedSize * 100) / otaFirmwareSize;
+      
+      // Wysyłaj status co 5% postępu (żeby nie spamować)
+      static int lastProgress = 0;
+      if (progress >= lastProgress + 5 || progress == 100) {
+        char buf[20];
+        sprintf(buf, "PROGRESS:%d%%", progress);
+        
+        BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+        if (otaService) {
+          BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+          if (statusChar) {
+            statusChar->setValue(buf);
+            statusChar->notify();
+            Serial.printf("OTA: Progress %d%% (%d/%d bytes)\n", progress, otaReceivedSize, otaFirmwareSize);
+          }
+        }
+        lastProgress = progress;
+      }
+    } else {
+      Serial.println("OTA: Failed to write chunk");
+      BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+      if (otaService) {
+        BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+        if (statusChar) {
+          statusChar->setValue("ERROR:OTA_WRITE");
+          statusChar->notify();
+        }
+      }
+    }
+  }
+};
+
 void setup()
 {
   delay(100);
@@ -547,119 +663,3 @@ void loop()
     buttonPressed = false;
   }
 }
-
-// --- OTA CALLBACKS ---------------------------------------------------------
-class OTACommandCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* chr) override {
-    std::string cmd = chr->getValue();
-    if (cmd.rfind("START:", 0) == 0) {
-      otaFirmwareSize = atoi(cmd.substr(6).c_str());
-      if (Update.begin(otaFirmwareSize)) {
-        otaInProgress   = true;
-        otaReceivedSize = 0;
-        // Find the status characteristic and notify
-        BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-        if (otaService) {
-          BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-          if (statusChar) {
-            statusChar->setValue("READY");
-            statusChar->notify();
-            Serial.println("OTA: Ready to receive firmware");
-          }
-        }
-      } else {
-        BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-        if (otaService) {
-          BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-          if (statusChar) {
-            statusChar->setValue("ERROR:OTA_BEGIN");
-            statusChar->notify();
-            Serial.println("OTA: Failed to begin update");
-          }
-        }
-      }
-    }
-    else if (cmd == "END") {
-      if (Update.end(true)) {
-        BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-        if (otaService) {
-          BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-          if (statusChar) {
-            statusChar->setValue("SUCCESS");
-            statusChar->notify();
-            Serial.println("OTA: Update successful, restarting...");
-          }
-        }
-        delay(1000);
-        ESP.restart();
-      } else {
-        BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-        if (otaService) {
-          BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-          if (statusChar) {
-            statusChar->setValue("ERROR:OTA_END");
-            statusChar->notify();
-            Serial.println("OTA: Failed to end update");
-          }
-        }
-      }
-      otaInProgress = false;
-    }
-  }
-};
-
-class OTADataCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* chr) override {
-    if (!otaInProgress) return;
-    
-    std::string chunk = chr->getValue();
-    size_t chunkSize = chunk.size();
-    
-    // Sprawdź czy fragment nie jest za duży
-    if (chunkSize > OTA_CHUNK_SIZE) {
-      Serial.printf("OTA: Chunk too large (%d bytes), max is %d\n", chunkSize, OTA_CHUNK_SIZE);
-      BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-      if (otaService) {
-        BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-        if (statusChar) {
-          statusChar->setValue("ERROR:CHUNK_TOO_LARGE");
-          statusChar->notify();
-        }
-      }
-      return;
-    }
-    
-    if (Update.write((uint8_t*)chunk.data(), chunkSize) == chunkSize) {
-      otaReceivedSize += chunkSize;
-      int progress = (otaReceivedSize * 100) / otaFirmwareSize;
-      
-      // Wysyłaj status co 5% postępu (żeby nie spamować)
-      static int lastProgress = 0;
-      if (progress >= lastProgress + 5 || progress == 100) {
-        char buf[20];
-        sprintf(buf, "PROGRESS:%d%%", progress);
-        
-        BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-        if (otaService) {
-          BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-          if (statusChar) {
-            statusChar->setValue(buf);
-            statusChar->notify();
-            Serial.printf("OTA: Progress %d%% (%d/%d bytes)\n", progress, otaReceivedSize, otaFirmwareSize);
-          }
-        }
-        lastProgress = progress;
-      }
-    } else {
-      Serial.println("OTA: Failed to write chunk");
-      BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-      if (otaService) {
-        BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-        if (statusChar) {
-          statusChar->setValue("ERROR:OTA_WRITE");
-          statusChar->notify();
-        }
-      }
-    }
-  }
-};
