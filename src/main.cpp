@@ -84,7 +84,7 @@ unsigned long hitTime = 0;
 bool   otaInProgress   = false;
 size_t otaFirmwareSize = 0;
 size_t otaReceivedSize = 0;
-const int OTA_CHUNK_SIZE = 20; // Bezpieczny rozmiar fragmentu BLE
+const int OTA_CHUNK_SIZE = 600; // Bezpieczny rozmiar fragmentu BLE
 
 // Add this enum before the WriteCallbacks class
 enum class BLECommand
@@ -605,7 +605,7 @@ void setup()
   );
   BLECharacteristic* otaDataChar = otaService->createCharacteristic(
     OTA_DATA_CHAR_UUID,
-    BLECharacteristic::PROPERTY_WRITE
+    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
   );
   BLECharacteristic* otaStatusChar = otaService->createCharacteristic(
     OTA_STATUS_CHAR_UUID,
