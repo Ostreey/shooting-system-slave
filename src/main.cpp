@@ -292,7 +292,6 @@ void batteryMonitorTask(void *pvParameters)
       goToDeepSleep(true);
     }
 
-    // Check for low battery
     if (percentage < 5)
     {
       Serial.println("Battery low, going to sleep");
