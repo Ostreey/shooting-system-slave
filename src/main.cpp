@@ -5,7 +5,7 @@
 #include <Wire.h>
 #include <Arduino.h>
 #include "PiezoSensor.h"
-#include <WiFiManager.h>
+
 #include <esp_adc_cal.h>
 #include <Update.h>
 
@@ -60,15 +60,14 @@ TaskHandle_t batteryTaskHandle = NULL;
 // Add this task handle near the top with other global variables
 TaskHandle_t ledStatusTaskHandle = NULL;
 // Add these constants at the top with other definitions
-const int TURN_OFF_TIME = 2000;       // 2 seconds for long press
-const int WAKE_UP_HOLD_TIME = 2000;   // 2 seconds required to confirm wake up
-const int SECRET_PRESS_WINDOW = 1000; // 2 second window for secret combination
-const int SECRET_PRESS_COUNT = 10;    // Number of presses needed for secret combination
-bool isWebPortalOpen = false, isGoingToSleep = false;
+const int TURN_OFF_TIME = 2000;     // 2 seconds for long press
+const int WAKE_UP_HOLD_TIME = 2000; // 2 seconds required to confirm wake up
+
+const unsigned long AUTO_SLEEP_TIME = 5 * 60 * 1000; // 1 minute in milliseconds
+bool isGoingToSleep = false;
 // Add these variables in the global scope
-unsigned long lastPressTime = 0;
-int pressCount = 0;
 int brightness = 255;
+unsigned long lastDisconnectTime = 0;
 
 unsigned long hitTime = 0;
 
@@ -284,11 +283,25 @@ void batteryMonitorTask(void *pvParameters)
 
     int percentage = getBatteryPercentage();
     sendBatteryLevel(percentage);
-    if (percentage < 5 && !isWebPortalOpen)
+
+    // Check for low battery
+    if (percentage < 5)
     {
       Serial.println("Battery low, going to sleep");
       goToDeepSleep();
     }
+
+    // Check for auto-sleep after timeout when not connected
+    if (!deviceConnected && lastDisconnectTime > 0)
+    {
+      unsigned long disconnectedTime = millis() - lastDisconnectTime;
+      if (disconnectedTime >= AUTO_SLEEP_TIME)
+      {
+        Serial.println("No connection for 1 minute, going to sleep");
+        goToDeepSleep();
+      }
+    }
+
     vTaskDelay(30000 / portTICK_PERIOD_MS); // 30 seconds delay
   }
 }
@@ -360,45 +373,19 @@ class MyServerCallbacks : public BLEServerCallbacks
   {
     Serial.println("Device connected");
     deviceConnected = true;
+    lastDisconnectTime = 0; // Reset disconnect timer when connected
     blinkLEDS();
     vTaskDelay(1000 / portTICK_PERIOD_MS);
     xTaskCreate(initialBatteryTask, "InitBattery", 2048, NULL, 1, NULL);
   };
   void onDisconnect(BLEServer *pServer)
   {
+    Serial.println("Device disconnected");
     deviceConnected = false;
+    lastDisconnectTime = millis(); // Record disconnection time
     pServer->getAdvertising()->start();
   }
 };
-
-void openWiFiPortal()
-{
-  // Stop BLE advertising before opening portal
-  BLEDevice::getAdvertising()->stop();
-
-  // Visual indication
-  for (int i = 0; i < 5; i++)
-  {
-    setLeds(false);
-    delay(50);
-    setLeds(true);
-    delay(50);
-  }
-
-  isWebPortalOpen = true;
-  Serial.println("Starting WiFiManager portal");
-
-  WiFiManager wifiManager;
-  // Set timeout to 3 minutes (180 seconds)
-  wifiManager.setConfigPortalTimeout(180);
-  wifiManager.startConfigPortal("ShootingSystemAP");
-
-  // After portal is closed
-  isWebPortalOpen = false;
-
-  // Restart BLE advertising
-  BLEDevice::getAdvertising()->start();
-}
 
 // --- OTA CALLBACKS ---------------------------------------------------------
 class OTACommandCallbacks : public BLECharacteristicCallbacks
@@ -616,6 +603,9 @@ void setup()
 
   Serial.println("Waiting for a client connection to notify...");
 
+  // Initialize disconnect timer to start auto-sleep countdown from boot
+  lastDisconnectTime = millis();
+
   // Create battery monitoring task
   xTaskCreatePinnedToCore(
       batteryMonitorTask, // Task function
@@ -695,25 +685,6 @@ void loop()
       pressStartTime = millis();
       buttonPressed = true;
       Serial.println("Button pressed");
-
-      // Handle secret combination
-      unsigned long currentTime = millis();
-      if (currentTime - lastPressTime < SECRET_PRESS_WINDOW)
-      {
-        pressCount++;
-        if (pressCount >= SECRET_PRESS_COUNT)
-        {
-          // Secret combination detected - open WiFi manager
-          // openWiFiPortal();
-          pressCount = 0; // Reset press count
-        }
-      }
-      else
-      {
-        // Reset if too much time has passed
-        pressCount = 1;
-      }
-      lastPressTime = currentTime;
     }
 
     // Check for long press while button is still held
