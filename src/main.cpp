@@ -9,8 +9,6 @@
 #include <esp_adc_cal.h>
 #include <Update.h>
 
-
-
 // BLE server name
 #define bleServerName "SHOOTING TARGET"
 
@@ -19,10 +17,10 @@
 #define BATTERY_CHARACTERISTIC "cba1d466-344c-4be3-ab3f-189f80dd76ff"
 
 // OTA service UUIDs
-#define OTA_SERVICE_UUID          "12345678-1234-5678-1234-56789abc0000"
-#define OTA_COMMAND_CHAR_UUID     "12345678-1234-5678-1234-56789abc0001"
-#define OTA_DATA_CHAR_UUID        "12345678-1234-5678-1234-56789abc0002"
-#define OTA_STATUS_CHAR_UUID      "12345678-1234-5678-1234-56789abc0003"
+#define OTA_SERVICE_UUID "12345678-1234-5678-1234-56789abc0000"
+#define OTA_COMMAND_CHAR_UUID "12345678-1234-5678-1234-56789abc0001"
+#define OTA_DATA_CHAR_UUID "12345678-1234-5678-1234-56789abc0002"
+#define OTA_STATUS_CHAR_UUID "12345678-1234-5678-1234-56789abc0003"
 
 // Add these constants for ADC calibration
 #define DEFAULT_VREF 1100         // Default reference voltage in mV
@@ -40,18 +38,11 @@ float temp;
 
 bool deviceConnected = false;
 
-
-
-
-
-
-
-
 const int ledBlue = 17;
 const int ledGreen = 18;
 const int ledRed = 19;
-const int wifiButton = 15; // New button pin definition
-const int batteryPin = 33; // Battery voltage measurement pin
+const int wakeUpButton = 15; // New button pin definition
+const int batteryPin = 33;   // Battery voltage measurement pin
 const int ledPowerEnable = 4;
 
 PiezoSensor sensor(32, 400);
@@ -70,8 +61,9 @@ TaskHandle_t batteryTaskHandle = NULL;
 TaskHandle_t ledStatusTaskHandle = NULL;
 // Add these constants at the top with other definitions
 const int TURN_OFF_TIME = 2000;       // 2 seconds for long press
+const int WAKE_UP_HOLD_TIME = 2000;   // 2 seconds required to confirm wake up
 const int SECRET_PRESS_WINDOW = 1000; // 2 second window for secret combination
-const int SECRET_PRESS_COUNT = 10;     // Number of presses needed for secret combination
+const int SECRET_PRESS_COUNT = 10;    // Number of presses needed for secret combination
 bool isWebPortalOpen = false, isGoingToSleep = false;
 // Add these variables in the global scope
 unsigned long lastPressTime = 0;
@@ -81,7 +73,7 @@ int brightness = 255;
 unsigned long hitTime = 0;
 
 // OTA state
-bool   otaInProgress   = false;
+bool otaInProgress = false;
 size_t otaFirmwareSize = 0;
 size_t otaReceivedSize = 0;
 const int OTA_CHUNK_SIZE = 600; // Bezpieczny rozmiar fragmentu BLE
@@ -216,17 +208,53 @@ int getBatteryPercentage()
   return percentage;
 }
 
-void goToDeepSleep()
+void goToDeepSleep(bool skipLedBlink = false)
 {
   isGoingToSleep = true;
-  blinkLEDS();
-  delay(3000 / portTICK_PERIOD_MS);
+
+  if (!skipLedBlink)
+  {
+    blinkLEDS();
+    delay(3000 / portTICK_PERIOD_MS);
+  }
+
   digitalWrite(ledPowerEnable, LOW);
   Serial.println("Going to deep sleep...");
   esp_sleep_enable_ext0_wakeup(GPIO_NUM_15, 0);
   esp_deep_sleep_start();
 }
 
+// Function to validate wake-up by checking if button is held for required time
+bool validateWakeUp()
+{
+  Serial.println("Validating wake-up - button must be held for 2 seconds...");
+
+  // Check if button is still pressed when we start validation
+  if (digitalRead(wakeUpButton) != LOW)
+  {
+    Serial.println("Button not pressed during validation - going back to sleep");
+    return false;
+  }
+
+  unsigned long startTime = millis();
+
+  while ((millis() - startTime) < WAKE_UP_HOLD_TIME)
+  {
+    // Check if button was released during the hold period
+    if (digitalRead(wakeUpButton) != LOW)
+    {
+      Serial.println("Button released before 2 seconds - going back to sleep");
+      return false;
+    }
+
+    delay(50); // Small delay to prevent excessive polling
+  }
+
+  // If we reach here, button was held for full 2 seconds
+  Serial.println("Wake-up validated - button held for 2 seconds");
+
+  return true;
+}
 
 void setLeds(bool on)
 {
@@ -243,7 +271,6 @@ void setLeds(bool on)
     ledcWrite(PWM_CHANNEL_BLUE, 0);
   }
 }
-
 
 // Battery monitoring task
 void batteryMonitorTask(void *pvParameters)
@@ -314,8 +341,6 @@ class WriteCallbacks : public BLECharacteristicCallbacks
     case BLECommand::SET_BRIGHTNESS:
       brightness = constrain(cmdData.value, 0, 255);
       break;
-
-    
     }
   }
 };
@@ -376,29 +401,39 @@ void openWiFiPortal()
 }
 
 // --- OTA CALLBACKS ---------------------------------------------------------
-class OTACommandCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* chr) override {
+class OTACommandCallbacks : public BLECharacteristicCallbacks
+{
+  void onWrite(BLECharacteristic *chr) override
+  {
     std::string cmd = chr->getValue();
-    if (cmd.rfind("START:", 0) == 0) {
+    if (cmd.rfind("START:", 0) == 0)
+    {
       otaFirmwareSize = atoi(cmd.substr(6).c_str());
-      if (Update.begin(otaFirmwareSize)) {
-        otaInProgress   = true;
+      if (Update.begin(otaFirmwareSize))
+      {
+        otaInProgress = true;
         otaReceivedSize = 0;
         // Find the status characteristic and notify
-        BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-        if (otaService) {
-          BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-          if (statusChar) {
+        BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+        if (otaService)
+        {
+          BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+          if (statusChar)
+          {
             statusChar->setValue("READY");
             statusChar->notify();
             Serial.println("OTA: Ready to receive firmware");
           }
         }
-      } else {
-        BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-        if (otaService) {
-          BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-          if (statusChar) {
+      }
+      else
+      {
+        BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+        if (otaService)
+        {
+          BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+          if (statusChar)
+          {
             statusChar->setValue("ERROR:OTA_BEGIN");
             statusChar->notify();
             Serial.println("OTA: Failed to begin update");
@@ -406,12 +441,16 @@ class OTACommandCallbacks : public BLECharacteristicCallbacks {
         }
       }
     }
-    else if (cmd == "END") {
-      if (Update.end(true)) {
-        BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-        if (otaService) {
-          BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-          if (statusChar) {
+    else if (cmd == "END")
+    {
+      if (Update.end(true))
+      {
+        BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+        if (otaService)
+        {
+          BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+          if (statusChar)
+          {
             statusChar->setValue("SUCCESS");
             statusChar->notify();
             Serial.println("OTA: Update successful, restarting...");
@@ -419,11 +458,15 @@ class OTACommandCallbacks : public BLECharacteristicCallbacks {
         }
         delay(1000);
         ESP.restart();
-      } else {
-        BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-        if (otaService) {
-          BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-          if (statusChar) {
+      }
+      else
+      {
+        BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+        if (otaService)
+        {
+          BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+          if (statusChar)
+          {
             statusChar->setValue("ERROR:OTA_END");
             statusChar->notify();
             Serial.println("OTA: Failed to end update");
@@ -435,41 +478,51 @@ class OTACommandCallbacks : public BLECharacteristicCallbacks {
   }
 };
 
-class OTADataCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* chr) override {
-    if (!otaInProgress) return;
-    
+class OTADataCallbacks : public BLECharacteristicCallbacks
+{
+  void onWrite(BLECharacteristic *chr) override
+  {
+    if (!otaInProgress)
+      return;
+
     std::string chunk = chr->getValue();
     size_t chunkSize = chunk.size();
-    
+
     // Sprawdź czy fragment nie jest za duży
-    if (chunkSize > OTA_CHUNK_SIZE) {
+    if (chunkSize > OTA_CHUNK_SIZE)
+    {
       Serial.printf("OTA: Chunk too large (%d bytes), max is %d\n", chunkSize, OTA_CHUNK_SIZE);
-      BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-      if (otaService) {
-        BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-        if (statusChar) {
+      BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+      if (otaService)
+      {
+        BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+        if (statusChar)
+        {
           statusChar->setValue("ERROR:CHUNK_TOO_LARGE");
           statusChar->notify();
         }
       }
       return;
     }
-    
-    if (Update.write((uint8_t*)chunk.data(), chunkSize) == chunkSize) {
+
+    if (Update.write((uint8_t *)chunk.data(), chunkSize) == chunkSize)
+    {
       otaReceivedSize += chunkSize;
       int progress = (otaReceivedSize * 100) / otaFirmwareSize;
-      
+
       // Wysyłaj status co 5% postępu (żeby nie spamować)
       static int lastProgress = 0;
-      if (progress >= lastProgress + 5 || progress == 100) {
+      if (progress >= lastProgress + 5 || progress == 100)
+      {
         char buf[20];
         sprintf(buf, "PROGRESS:%d%%", progress);
-        
-        BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-        if (otaService) {
-          BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-          if (statusChar) {
+
+        BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+        if (otaService)
+        {
+          BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+          if (statusChar)
+          {
             statusChar->setValue(buf);
             statusChar->notify();
             Serial.printf("OTA: Progress %d%% (%d/%d bytes)\n", progress, otaReceivedSize, otaFirmwareSize);
@@ -477,12 +530,16 @@ class OTADataCallbacks : public BLECharacteristicCallbacks {
         }
         lastProgress = progress;
       }
-    } else {
+    }
+    else
+    {
       Serial.println("OTA: Failed to write chunk");
-      BLEService* otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-      if (otaService) {
-        BLECharacteristic* statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-        if (statusChar) {
+      BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+      if (otaService)
+      {
+        BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+        if (statusChar)
+        {
           statusChar->setValue("ERROR:OTA_WRITE");
           statusChar->notify();
         }
@@ -506,8 +563,8 @@ void setup()
   digitalWrite(ledGreen, LOW);
   pinMode(ledRed, OUTPUT);
   digitalWrite(ledRed, LOW);
-  pinMode(wifiButton, INPUT_PULLUP); // Initialize button pin
-  pinMode(batteryPin, INPUT);        // Initialize battery pin
+  pinMode(wakeUpButton, INPUT_PULLUP); // Initialize button pin
+  pinMode(batteryPin, INPUT);          // Initialize battery pin
 
   sensor.begin();
   sensor.setCallback(ledOff);
@@ -574,6 +631,17 @@ void setup()
   if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0)
   {
     Serial.println("Woken up from deep sleep");
+
+    // Validate wake-up by checking if button is held for 2 seconds
+    if (!validateWakeUp())
+    {
+      // Button was not held long enough, go back to sleep
+      Serial.println("Wake-up validation failed - returning to deep sleep");
+      goToDeepSleep(true); // Skip LED blink since LEDC not initialized yet
+      return;              // This line will never be reached, but good practice
+    }
+
+    Serial.println("Wake-up validation successful - continuing normal operation");
   }
 
   // In setup(), add this after creating the battery monitoring task
@@ -598,19 +666,16 @@ void setup()
   ledcAttachPin(ledBlue, PWM_CHANNEL_BLUE);
 
   // OTA service
-  BLEService* otaService = pServer->createService(OTA_SERVICE_UUID);
-  BLECharacteristic* otaCommandChar = otaService->createCharacteristic(
-    OTA_COMMAND_CHAR_UUID,
-    BLECharacteristic::PROPERTY_WRITE
-  );
-  BLECharacteristic* otaDataChar = otaService->createCharacteristic(
-    OTA_DATA_CHAR_UUID,
-    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
-  );
-  BLECharacteristic* otaStatusChar = otaService->createCharacteristic(
-    OTA_STATUS_CHAR_UUID,
-    BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ
-  );
+  BLEService *otaService = pServer->createService(OTA_SERVICE_UUID);
+  BLECharacteristic *otaCommandChar = otaService->createCharacteristic(
+      OTA_COMMAND_CHAR_UUID,
+      BLECharacteristic::PROPERTY_WRITE);
+  BLECharacteristic *otaDataChar = otaService->createCharacteristic(
+      OTA_DATA_CHAR_UUID,
+      BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+  BLECharacteristic *otaStatusChar = otaService->createCharacteristic(
+      OTA_STATUS_CHAR_UUID,
+      BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
   otaCommandChar->setCallbacks(new OTACommandCallbacks());
   otaDataChar->setCallbacks(new OTADataCallbacks());
   otaStatusChar->addDescriptor(new BLE2902());
@@ -623,7 +688,7 @@ void loop()
   static bool buttonPressed = false;
 
   // Button handling
-  if (digitalRead(wifiButton) == LOW)
+  if (digitalRead(wakeUpButton) == LOW)
   { // Button is pressed
     if (!buttonPressed)
     { // Button was just pressed
@@ -639,7 +704,7 @@ void loop()
         if (pressCount >= SECRET_PRESS_COUNT)
         {
           // Secret combination detected - open WiFi manager
-         // openWiFiPortal();
+          // openWiFiPortal();
           pressCount = 0; // Reset press count
         }
       }
