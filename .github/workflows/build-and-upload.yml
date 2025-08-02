@@ -11,7 +11,9 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
+      with:
+        submodules: false
+        
     - name: Setup Python
       uses: actions/setup-python@v4
       with:
@@ -22,15 +24,18 @@ jobs:
         python -m pip install --upgrade pip
         pip install platformio
         
+    - name: Clean PlatformIO cache
+      run: |
+        pio run --target clean
+        rm -rf .pio/libdeps/
+        
     - name: Build firmware
       run: |
-        cd shooting-system-slave
         pio run
         
     - name: Extract version from source
       id: version
       run: |
-        cd shooting-system-slave
         VERSION=$(grep -o 'const char \*FIRMWARE_VERSION = "[^"]*"' src/main.cpp | cut -d'"' -f2)
         echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "Firmware version: $VERSION"
@@ -38,7 +43,7 @@ jobs:
     - name: Create build artifacts
       run: |
         mkdir -p build-output
-        cp shooting-system-slave/.pio/build/esp32doit-devkit-v1/firmware.bin build-output/
+        cp .pio/build/esp32doit-devkit-v1/firmware.bin build-output/
         
         # Create metadata
         cat > build-output/metadata.json << EOF
@@ -46,7 +51,7 @@ jobs:
           "version": "${{ steps.version.outputs.version }}",
           "buildDate": "$(date -u +%Y-%m-%d)",
           "buildTime": "$(date -u +%H:%M:%S)",
-          "fileSize": $(stat -c%s shooting-system-slave/.pio/build/esp32doit-devkit-v1/firmware.bin),
+          "fileSize": $(stat -c%s .pio/build/esp32doit-devkit-v1/firmware.bin),
           "changelog": "Auto-built from GitHub commit ${{ github.sha }}",
           "commitHash": "${{ github.sha }}"
         }
