@@ -12,9 +12,13 @@
 // BLE server name
 #define bleServerName "SHOOTING TARGET"
 
+// Firmware version - simple const
+const char *FIRMWARE_VERSION = "1.0.0";
+
 #define SERVICE_UUID "91bad492-b950-4226-aa2b-4ede9fa42fff"
 #define CHARACTERISTIC "cba1d466-344c-4be3-ab3f-189f80dd75ff"
 #define BATTERY_CHARACTERISTIC "cba1d466-344c-4be3-ab3f-189f80dd76ff"
+#define FIRMWARE_VERSION_CHARACTERISTIC "cba1d466-344c-4be3-ab3f-189f80dd77ff"
 
 // OTA service UUIDs
 #define OTA_SERVICE_UUID "12345678-1234-5678-1234-56789abc0000"
@@ -50,6 +54,7 @@ PiezoSensor sensor(32, 400);
 
 BLECharacteristic *piezoCharacteristic;
 BLECharacteristic *batteryCharacteristic;
+BLECharacteristic *firmwareVersionCharacteristic;
 
 BLEService *piezoService;
 BLEServer *pServer;
@@ -365,14 +370,6 @@ class WriteCallbacks : public BLECharacteristicCallbacks
   }
 };
 
-void initialBatteryTask(void *pvParameters)
-{
-  vTaskDelay(2000 / portTICK_PERIOD_MS); // Wait for connection to stabilize
-  int percentage = getBatteryPercentage();
-  sendBatteryLevel(percentage);
-  vTaskDelete(NULL); // Delete the task after it's done
-}
-
 // Setup callbacks onConnect and onDisconnect
 class MyServerCallbacks : public BLEServerCallbacks
 {
@@ -383,7 +380,7 @@ class MyServerCallbacks : public BLEServerCallbacks
     lastDisconnectTime = 0; // Reset disconnect timer when connected
     blinkLEDS();
     vTaskDelay(1000 / portTICK_PERIOD_MS);
-    xTaskCreate(initialBatteryTask, "InitBattery", 2048, NULL, 1, NULL);
+    xTaskCreate(initialDeviceInfoTask, "InitDeviceInfo", 2048, NULL, 1, NULL);
   };
   void onDisconnect(BLEServer *pServer)
   {
@@ -542,6 +539,34 @@ class OTADataCallbacks : public BLECharacteristicCallbacks
   }
 };
 
+void sendFirmwareVersion()
+{
+  if (deviceConnected && firmwareVersionCharacteristic)
+  {
+    firmwareVersionCharacteristic->setValue(FIRMWARE_VERSION);
+    firmwareVersionCharacteristic->notify();
+    Serial.println("Firmware version sent: " + String(FIRMWARE_VERSION));
+  }
+  else
+  {
+    Serial.println("Device not connected or firmware version characteristic not available.");
+  }
+}
+
+void initialDeviceInfoTask(void *pvParameters)
+{
+  vTaskDelay(2000 / portTICK_PERIOD_MS); // Wait for connection to stabilize
+
+  // Send battery level
+  int percentage = getBatteryPercentage();
+  sendBatteryLevel(percentage);
+
+  // Send firmware version
+  sendFirmwareVersion();
+
+  vTaskDelete(NULL); // Delete the task after it's done
+}
+
 void setup()
 {
   delay(100);
@@ -678,6 +703,25 @@ void setup()
   otaDataChar->setCallbacks(new OTADataCallbacks());
   otaStatusChar->addDescriptor(new BLE2902());
   otaService->start();
+
+  // Create and add the firmware version characteristic
+  firmwareVersionCharacteristic = piezoService->createCharacteristic(
+      FIRMWARE_VERSION_CHARACTERISTIC,
+      BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
+  firmwareVersionCharacteristic->addDescriptor(new BLE2902());
+  firmwareVersionCharacteristic->setValue(FIRMWARE_VERSION); // Remove String() wrapper
+  piezoService->start();                                     // Re-start the service to add the new characteristic
+
+  // Create the initial device info task
+  xTaskCreatePinnedToCore(
+      initialDeviceInfoTask, // Task function
+      "InitDeviceInfo",      // Task name
+      2048,                  // Stack size
+      NULL,                  // Task parameters
+      1,                     // Task priority
+      NULL,                  // Task handle (will be created by initialBatteryTask)
+      APP_CPU_NUM            // Run on Core 1
+  );
 }
 
 void loop()
