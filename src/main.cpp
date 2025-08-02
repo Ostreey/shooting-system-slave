@@ -44,6 +44,7 @@ const int ledRed = 19;
 const int wakeUpButton = 15; // New button pin definition
 const int batteryPin = 33;   // Battery voltage measurement pin
 const int ledPowerEnable = 4;
+const int chargingPin = 13; // Charging detection pin
 
 PiezoSensor sensor(32, 400);
 
@@ -63,7 +64,7 @@ TaskHandle_t ledStatusTaskHandle = NULL;
 const int TURN_OFF_TIME = 2000;     // 2 seconds for long press
 const int WAKE_UP_HOLD_TIME = 2000; // 2 seconds required to confirm wake up
 
-const unsigned long AUTO_SLEEP_TIME = 5 * 60 * 1000; // 1 minute in milliseconds
+const unsigned long AUTO_SLEEP_TIME = 5 * 60 * 1000; // 5 minutes in milliseconds
 bool isGoingToSleep = false;
 // Add these variables in the global scope
 int brightness = 255;
@@ -284,6 +285,13 @@ void batteryMonitorTask(void *pvParameters)
     int percentage = getBatteryPercentage();
     sendBatteryLevel(percentage);
 
+    // Check for charging - if charging pin goes low, charger is working
+    if (digitalRead(chargingPin) == LOW)
+    {
+      Serial.println("Charging detected, going to sleep");
+      goToDeepSleep(true);
+    }
+
     // Check for low battery
     if (percentage < 5)
     {
@@ -297,7 +305,7 @@ void batteryMonitorTask(void *pvParameters)
       unsigned long disconnectedTime = millis() - lastDisconnectTime;
       if (disconnectedTime >= AUTO_SLEEP_TIME)
       {
-        Serial.println("No connection for 1 minute, going to sleep");
+        Serial.println("No connection for 5 minutes, going to sleep");
         goToDeepSleep();
       }
     }
@@ -552,6 +560,7 @@ void setup()
   digitalWrite(ledRed, LOW);
   pinMode(wakeUpButton, INPUT_PULLUP); // Initialize button pin
   pinMode(batteryPin, INPUT);          // Initialize battery pin
+  pinMode(chargingPin, INPUT_PULLUP);  // Initialize charging detection pin
 
   sensor.begin();
   sensor.setCallback(ledOff);
