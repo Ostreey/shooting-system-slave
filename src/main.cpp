@@ -83,7 +83,13 @@ size_t otaFirmwareSize = 0;
 size_t otaReceivedSize = 0;
 const int OTA_CHUNK_SIZE = 600; // Bezpieczny rozmiar fragmentu BLE
 
-// Add this enum before the WriteCallbacks class
+int getBatteryPercentage();
+void sendBatteryLevel(int percentage);
+void sendFirmwareVersion();
+void initialDeviceInfoTask(void *pvParameters);
+void ledOff(int piezoValue);
+void setLeds(bool on);
+
 enum class BLECommand
 {
   UNKNOWN,
@@ -93,8 +99,6 @@ enum class BLECommand
   GAME1,
   SET_BRIGHTNESS, // New command for LED brightness
 };
-void ledOff(int piezoValue);
-void setLeds(bool on);
 
 // Add a struct to hold command and value
 struct BLECommandData
@@ -149,6 +153,20 @@ void ledOff(int piezoValue)
   {
     Serial.println("Device not connected, cannot send notification.");
   }
+}
+
+void initialDeviceInfoTask(void *pvParameters)
+{
+  vTaskDelay(2000 / portTICK_PERIOD_MS); // Wait for connection to stabilize
+
+  // Send battery level
+  int percentage = getBatteryPercentage();
+  sendBatteryLevel(percentage);
+
+  // Send firmware version
+  sendFirmwareVersion();
+
+  vTaskDelete(NULL); // Delete the task after it's done
 }
 
 void sendBatteryLevel(int percentage)
@@ -551,20 +569,6 @@ void sendFirmwareVersion()
   {
     Serial.println("Device not connected or firmware version characteristic not available.");
   }
-}
-
-void initialDeviceInfoTask(void *pvParameters)
-{
-  vTaskDelay(2000 / portTICK_PERIOD_MS); // Wait for connection to stabilize
-
-  // Send battery level
-  int percentage = getBatteryPercentage();
-  sendBatteryLevel(percentage);
-
-  // Send firmware version
-  sendFirmwareVersion();
-
-  vTaskDelete(NULL); // Delete the task after it's done
 }
 
 void setup()
