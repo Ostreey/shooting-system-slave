@@ -57,26 +57,22 @@ jobs:
         }
         EOF
         
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: v${{ steps.version.outputs.version }}
-        name: Firmware v${{ steps.version.outputs.version }}
-        body: |
-          Auto-generated firmware release
-          - Version: ${{ steps.version.outputs.version }}
-          - Build Date: $(date -u +%Y-%m-%d)
-          - Commit: ${{ github.sha }}
-        files: |
-          build-output/firmware.bin
-          build-output/metadata.json
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
         name: firmware-${{ steps.version.outputs.version }}
-        path: build-output/ 
+        path: build-output/
+
+    # Alternative: Create release using GitHub CLI
+    - name: Create Release
+      run: |
+        gh release create v${{ steps.version.outputs.version }} \
+          --title "Firmware v${{ steps.version.outputs.version }}" \
+          --notes "Auto-generated firmware release
+        - Version: ${{ steps.version.outputs.version }}
+        - Build Date: $(date -u +%Y-%m-%d)
+        - Commit: ${{ github.sha }}" \
+          build-output/firmware.bin \
+          build-output/metadata.json
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
