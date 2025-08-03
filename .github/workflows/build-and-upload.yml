@@ -61,18 +61,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: firmware-${{ steps.version.outputs.version }}
-        path: build-output/
-
-    # Alternative: Create release using GitHub CLI
-    - name: Create Release
-      run: |
-        gh release create v${{ steps.version.outputs.version }} \
-          --title "Firmware v${{ steps.version.outputs.version }}" \
-          --notes "Auto-generated firmware release
-        - Version: ${{ steps.version.outputs.version }}
-        - Build Date: $(date -u +%Y-%m-%d)
-        - Commit: ${{ github.sha }}" \
-          build-output/firmware.bin \
-          build-output/metadata.json
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+        path: build-output/ 
