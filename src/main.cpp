@@ -71,6 +71,8 @@ const int WAKE_UP_HOLD_TIME = 2000; // 2 seconds required to confirm wake up
 
 const unsigned long AUTO_SLEEP_TIME = 5 * 60 * 1000; // 5 minutes in milliseconds
 bool isGoingToSleep = false;
+// State tracking for wake-up behavior
+bool justWokenUp = false; // Flag to track if we just woke up and need to wait for button release
 // Add these variables in the global scope
 int brightness = 255;
 unsigned long lastDisconnectTime = 0;
@@ -275,6 +277,10 @@ bool validateWakeUp()
 
   // If we reach here, button was held for full 2 seconds
   Serial.println("Wake-up validated - button held for 2 seconds");
+
+  // Set flag to indicate we just woke up successfully
+  // This will prevent turn-off detection for the current button press
+  justWokenUp = true;
 
   return true;
 }
@@ -578,6 +584,24 @@ void setup()
   Serial.begin(115200);
   Serial.println("Start");
 
+  // Check wake-up cause FIRST, before any other initialization
+  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0)
+  {
+    Serial.println("Woken up from deep sleep");
+
+    // Validate wake-up by checking if button is held for 2 seconds
+    if (!validateWakeUp())
+    {
+      // Button was not held long enough, go back to sleep
+      Serial.println("Wake-up validation failed - returning to deep sleep");
+      goToDeepSleep(true); // Skip LED blink since nothing is initialized yet
+      return;              // This line will never be reached, but good practice
+    }
+
+    Serial.println("Wake-up validation successful - continuing normal operation");
+  }
+
+  // Now proceed with normal initialization
   pinMode(ledPowerEnable, OUTPUT);
   digitalWrite(ledPowerEnable, HIGH);
   pinMode(ledBlue, OUTPUT);
@@ -655,21 +679,7 @@ void setup()
   );
 
   // After ESP32 wakes up from deep sleep
-  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0)
-  {
-    Serial.println("Woken up from deep sleep");
-
-    // Validate wake-up by checking if button is held for 2 seconds
-    if (!validateWakeUp())
-    {
-      // Button was not held long enough, go back to sleep
-      Serial.println("Wake-up validation failed - returning to deep sleep");
-      goToDeepSleep(true); // Skip LED blink since LEDC not initialized yet
-      return;              // This line will never be reached, but good practice
-    }
-
-    Serial.println("Wake-up validation successful - continuing normal operation");
-  }
+  // The wake-up check is now at the beginning of setup()
 
   // In setup(), add this after creating the battery monitoring task
   xTaskCreatePinnedToCore(
@@ -713,8 +723,7 @@ void setup()
       FIRMWARE_VERSION_CHARACTERISTIC,
       BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
   firmwareVersionCharacteristic->addDescriptor(new BLE2902());
-  firmwareVersionCharacteristic->setValue(FIRMWARE_VERSION); // Remove String() wrapper
-  piezoService->start();                                     // Re-start the service to add the new characteristic
+  firmwareVersionCharacteristic->setValue(FIRMWARE_VERSION);
 
   // Create the initial device info task
   xTaskCreatePinnedToCore(
@@ -743,15 +752,20 @@ void loop()
       Serial.println("Button pressed");
     }
 
-    // Check for long press while button is still held
-    if ((millis() - pressStartTime) > TURN_OFF_TIME)
+    // Check for long press while button is still held (skip if this is the wake-up press)
+    if (!justWokenUp && (millis() - pressStartTime) > TURN_OFF_TIME)
     {
       Serial.println("TURN OFF TIME DETECTED");
       goToDeepSleep();
     }
   }
   else if (buttonPressed)
-  { // Button was released
+  {
     buttonPressed = false;
+
+    if (justWokenUp)
+    {
+      justWokenUp = false;
+    }
   }
 }
