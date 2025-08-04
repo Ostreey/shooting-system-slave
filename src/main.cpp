@@ -645,9 +645,6 @@ void setup()
   batteryCharacteristic->addDescriptor(new BLE2902());
   piezoCharacteristic->setCallbacks(new WriteCallbacks());
 
-  // Start the service
-  piezoService->start();
-
   // Configure the advertising data
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(piezoService->getUUID());
@@ -724,7 +721,7 @@ void setup()
       BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
   firmwareVersionCharacteristic->addDescriptor(new BLE2902());
   firmwareVersionCharacteristic->setValue(FIRMWARE_VERSION);
-
+  piezoService->start();
   // Create the initial device info task
   xTaskCreatePinnedToCore(
       initialDeviceInfoTask, // Task function
