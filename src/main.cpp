@@ -605,11 +605,11 @@ void setup()
   pinMode(ledPowerEnable, OUTPUT);
   digitalWrite(ledPowerEnable, HIGH);
   pinMode(ledBlue, OUTPUT);
-  digitalWrite(ledBlue, LOW);
+  digitalWrite(ledBlue, HIGH);
   pinMode(ledGreen, OUTPUT);
-  digitalWrite(ledGreen, LOW);
+  digitalWrite(ledGreen, HIGH);
   pinMode(ledRed, OUTPUT);
-  digitalWrite(ledRed, LOW);
+  digitalWrite(ledRed, HIGH);
   pinMode(wakeUpButton, INPUT_PULLUP); // Initialize button pin
   pinMode(batteryPin, INPUT);          // Initialize battery pin
   pinMode(chargingPin, INPUT_PULLUP);  // Initialize charging detection pin
@@ -640,10 +640,20 @@ void setup()
       BATTERY_CHARACTERISTIC,
       BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
 
+  // Create and add the firmware version characteristic BEFORE starting service
+  firmwareVersionCharacteristic = piezoService->createCharacteristic(
+      FIRMWARE_VERSION_CHARACTERISTIC,
+      BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
+
   // Add Descriptor and Callbacks
   piezoCharacteristic->addDescriptor(new BLE2902());
   batteryCharacteristic->addDescriptor(new BLE2902());
+  firmwareVersionCharacteristic->addDescriptor(new BLE2902());
   piezoCharacteristic->setCallbacks(new WriteCallbacks());
+  firmwareVersionCharacteristic->setValue(FIRMWARE_VERSION);
+
+  // Start the service ONCE with all characteristics
+  piezoService->start();
 
   // Configure the advertising data
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
@@ -715,13 +725,6 @@ void setup()
   otaStatusChar->addDescriptor(new BLE2902());
   otaService->start();
 
-  // Create and add the firmware version characteristic
-  firmwareVersionCharacteristic = piezoService->createCharacteristic(
-      FIRMWARE_VERSION_CHARACTERISTIC,
-      BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
-  firmwareVersionCharacteristic->addDescriptor(new BLE2902());
-  firmwareVersionCharacteristic->setValue(FIRMWARE_VERSION);
-  piezoService->start();
   // Create the initial device info task
   xTaskCreatePinnedToCore(
       initialDeviceInfoTask, // Task function
