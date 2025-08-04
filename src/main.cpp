@@ -8,6 +8,8 @@
 
 #include <esp_adc_cal.h>
 #include <Update.h>
+#include <esp_ota_ops.h>
+#include <esp_task_wdt.h>
 
 // BLE server name
 #define bleServerName "SHOOTING TARGET"
@@ -83,7 +85,7 @@ unsigned long hitTime = 0;
 bool otaInProgress = false;
 size_t otaFirmwareSize = 0;
 size_t otaReceivedSize = 0;
-const int OTA_CHUNK_SIZE = 600; // Bezpieczny rozmiar fragmentu BLE
+const int OTA_CHUNK_SIZE = 256; // Conservative chunk size to prevent watchdog timeout
 
 int getBatteryPercentage();
 void sendBatteryLevel(int percentage);
@@ -191,9 +193,9 @@ void blinkLEDS()
   for (int i = 0; i < 3; i++)
   {
     setLeds(true);
-    delay(200);
+    vTaskDelay(200 / portTICK_PERIOD_MS);
     setLeds(false);
-    delay(200);
+    vTaskDelay(200 / portTICK_PERIOD_MS);
   }
 }
 
@@ -424,11 +426,51 @@ class OTACommandCallbacks : public BLECharacteristicCallbacks
     if (cmd.rfind("START:", 0) == 0)
     {
       otaFirmwareSize = atoi(cmd.substr(6).c_str());
+
+      // Step 1: Verify OTA partition availability
+      const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
+      if (update_partition == NULL)
+      {
+        BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+        if (otaService)
+        {
+          BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+          if (statusChar)
+          {
+            statusChar->setValue("ERROR:NO_OTA_PARTITION");
+            statusChar->notify();
+            Serial.println("OTA: No OTA partition available");
+          }
+        }
+        return;
+      }
+
+      // Step 2: Check if firmware size fits in partition
+      if (otaFirmwareSize > update_partition->size)
+      {
+        BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+        if (otaService)
+        {
+          BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+          if (statusChar)
+          {
+            String error = "ERROR:FIRMWARE_TOO_LARGE:" + String(otaFirmwareSize) + ">" + String(update_partition->size);
+            statusChar->setValue(error.c_str());
+            statusChar->notify();
+            Serial.printf("OTA: Firmware too large: %d > %d\n", otaFirmwareSize, update_partition->size);
+          }
+        }
+        return;
+      }
+
+      Serial.printf("OTA: Starting update - Size: %d bytes, Partition: %s (0x%x)\n",
+                    otaFirmwareSize, update_partition->label, update_partition->address);
+
+      // Step 3: Begin the update
       if (Update.begin(otaFirmwareSize))
       {
         otaInProgress = true;
         otaReceivedSize = 0;
-        // Find the status characteristic and notify
         BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
         if (otaService)
         {
@@ -449,42 +491,98 @@ class OTACommandCallbacks : public BLECharacteristicCallbacks
           BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
           if (statusChar)
           {
-            statusChar->setValue("ERROR:OTA_BEGIN");
+            String errorDetails = "ERROR:OTA_BEGIN:" + String(Update.errorString());
+            statusChar->setValue(errorDetails.c_str());
             statusChar->notify();
-            Serial.println("OTA: Failed to begin update");
+            Serial.printf("OTA: Failed to begin update - %s\n", Update.errorString());
           }
         }
       }
     }
     else if (cmd == "END")
     {
+      Serial.println("OTA: Ending update and performing verification...");
+
+      // Step 1: End the update process
       if (Update.end(true))
       {
+        // Step 2: Perform comprehensive verification
+        bool verificationPassed = true;
+        String errorMsg = "";
+
+        // Check if update is finished properly
+        if (!Update.isFinished())
+        {
+          verificationPassed = false;
+          errorMsg = "Update not finished";
+          Serial.println("OTA: Verification failed - update not finished");
+        }
+
+        // Check if there were any errors during update
+        if (Update.hasError())
+        {
+          verificationPassed = false;
+          errorMsg = "Update has errors: " + String(Update.errorString());
+          Serial.printf("OTA: Verification failed - %s\n", Update.errorString());
+        }
+
+        // Verify we received the expected amount of data
+        if (otaReceivedSize != otaFirmwareSize)
+        {
+          verificationPassed = false;
+          errorMsg = "Size mismatch: expected " + String(otaFirmwareSize) + " got " + String(otaReceivedSize);
+          Serial.printf("OTA: Verification failed - size mismatch: expected %d, got %d\n", otaFirmwareSize, otaReceivedSize);
+        }
+
         BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+        BLECharacteristic *statusChar = nullptr;
         if (otaService)
         {
-          BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+          statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+        }
+
+        if (verificationPassed)
+        {
+          // All verification checks passed
           if (statusChar)
           {
             statusChar->setValue("SUCCESS");
             statusChar->notify();
-            Serial.println("OTA: Update successful, restarting...");
+            Serial.println("OTA: All verification checks passed. Update successful, restarting...");
           }
+
+          // Ensure BLE message is sent before restart
+          Serial.flush();                        // Flush serial output
+          vTaskDelay(3000 / portTICK_PERIOD_MS); // Non-blocking delay to allow BLE transmission
+          ESP.restart();
         }
-        delay(1000);
-        ESP.restart();
+        else
+        {
+          // Verification failed - don't restart
+          if (statusChar)
+          {
+            String fullError = "ERROR:VERIFY_FAILED:" + errorMsg;
+            statusChar->setValue(fullError.c_str());
+            statusChar->notify();
+            Serial.printf("OTA: Verification failed - %s\n", errorMsg.c_str());
+          }
+          // Reset OTA state but don't restart with corrupted firmware
+          Update.abort();
+        }
       }
       else
       {
+        // Update.end() itself failed
         BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
         if (otaService)
         {
           BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
           if (statusChar)
           {
-            statusChar->setValue("ERROR:OTA_END");
+            String errorDetails = "ERROR:OTA_END:" + String(Update.errorString());
+            statusChar->setValue(errorDetails.c_str());
             statusChar->notify();
-            Serial.println("OTA: Failed to end update");
+            Serial.printf("OTA: Failed to end update - %s\n", Update.errorString());
           }
         }
       }
@@ -500,10 +598,41 @@ class OTADataCallbacks : public BLECharacteristicCallbacks
     if (!otaInProgress)
       return;
 
+    // Feed watchdog to prevent timeout during flash operations
+    esp_task_wdt_reset();
+
+    // Monitor memory before processing chunk
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t minFreeHeap = ESP.getMinFreeHeap();
+
     std::string chunk = chr->getValue();
     size_t chunkSize = chunk.size();
 
-    // Sprawdź czy fragment nie jest za duży
+    // Reduced logging frequency to avoid serial bottlenecks
+    if (otaReceivedSize % (10 * 1024) == 0)
+    { // Log every 10KB instead of every chunk
+      Serial.printf("OTA: Progress %d/%d bytes, heap: %d\n", otaReceivedSize, otaFirmwareSize, freeHeap);
+    }
+
+    // Check if we have enough memory to continue safely
+    if (freeHeap < 4096)
+    { // Less than 4KB free
+      Serial.printf("OTA: Low memory warning - heap: %d bytes\n", freeHeap);
+      BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+      if (otaService)
+      {
+        BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+        if (statusChar)
+        {
+          statusChar->setValue("ERROR:LOW_MEMORY");
+          statusChar->notify();
+        }
+      }
+      otaInProgress = false;
+      return;
+    }
+
+    // Check if chunk is too large
     if (chunkSize > OTA_CHUNK_SIZE)
     {
       Serial.printf("OTA: Chunk too large (%d bytes), max is %d\n", chunkSize, OTA_CHUNK_SIZE);
@@ -517,49 +646,74 @@ class OTADataCallbacks : public BLECharacteristicCallbacks
           statusChar->notify();
         }
       }
+      otaInProgress = false;
       return;
     }
 
-    if (Update.write((uint8_t *)chunk.data(), chunkSize) == chunkSize)
+    // Check if this chunk would exceed expected firmware size
+    if (otaReceivedSize + chunkSize > otaFirmwareSize)
     {
-      otaReceivedSize += chunkSize;
-      int progress = (otaReceivedSize * 100) / otaFirmwareSize;
-
-      // Wysyłaj status co 5% postępu (żeby nie spamować)
-      static int lastProgress = 0;
-      if (progress >= lastProgress + 5 || progress == 100)
-      {
-        char buf[20];
-        sprintf(buf, "PROGRESS:%d%%", progress);
-
-        BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-        if (otaService)
-        {
-          BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-          if (statusChar)
-          {
-            statusChar->setValue(buf);
-            statusChar->notify();
-            Serial.printf("OTA: Progress %d%% (%d/%d bytes)\n", progress, otaReceivedSize, otaFirmwareSize);
-          }
-        }
-        lastProgress = progress;
-      }
-    }
-    else
-    {
-      Serial.println("OTA: Failed to write chunk");
+      Serial.printf("OTA: Chunk would exceed firmware size (%d + %d > %d)\n",
+                    otaReceivedSize, chunkSize, otaFirmwareSize);
       BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
       if (otaService)
       {
         BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
         if (statusChar)
         {
-          statusChar->setValue("ERROR:OTA_WRITE");
+          statusChar->setValue("ERROR:SIZE_EXCEEDED");
           statusChar->notify();
         }
       }
+      otaInProgress = false;
+      return;
     }
+
+    // Feed watchdog before flash operation
+    esp_task_wdt_reset();
+
+    // Yield to allow other tasks to run before flash operation
+    yield();
+
+    // Write chunk to flash
+    size_t written = Update.write((uint8_t *)chunk.data(), chunkSize);
+
+    // Feed watchdog again after flash operation
+    esp_task_wdt_reset();
+
+    // Additional yield after flash operation to prevent watchdog timeout
+    yield();
+
+    if (written == chunkSize)
+    {
+      otaReceivedSize += chunkSize;
+
+      // No progress calculation needed - Android handles progress locally
+      // This eliminates processing overhead and BLE traffic
+    }
+    else
+    {
+      Serial.printf("OTA: Failed to write chunk - expected %d, wrote %d bytes\n", chunkSize, written);
+      Serial.printf("OTA: Update error: %s\n", Update.errorString());
+
+      BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
+      if (otaService)
+      {
+        BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
+        if (statusChar)
+        {
+          String errorMsg = "ERROR:OTA_WRITE:" + String(Update.errorString());
+          statusChar->setValue(errorMsg.c_str());
+          statusChar->notify();
+        }
+      }
+
+      // Stop OTA process on write failure
+      otaInProgress = false;
+    }
+
+    // Final yield to allow BLE and other tasks to process
+    yield();
   }
 };
 
@@ -599,6 +753,10 @@ void setup()
     }
 
     Serial.println("Wake-up validation successful - continuing normal operation");
+  }
+  else
+  {
+    goToDeepSleep(true);
   }
 
   // Now proceed with normal initialization
