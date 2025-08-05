@@ -731,6 +731,30 @@ void sendFirmwareVersion()
   }
 }
 
+bool isResetAfterOTA()
+{
+  // Get the reset reason
+  esp_reset_reason_t reset_reason = esp_reset_reason();
+
+  // Check if it's a software reset (which happens after OTA)
+  if (reset_reason == ESP_RST_SW)
+  {
+    // Additional check: verify if running partition is different from boot partition
+    const esp_partition_t *running_partition = esp_ota_get_running_partition();
+    const esp_partition_t *boot_partition = esp_ota_get_boot_partition();
+
+    // If they're different, it means we just completed an OTA update
+    if (running_partition != boot_partition)
+    {
+      Serial.printf("Reset after OTA detected - Running: %s, Boot: %s\n",
+                    running_partition->label, boot_partition->label);
+      return true;
+    }
+  }
+
+  return false;
+}
+
 void setup()
 {
   delay(100);
@@ -756,7 +780,7 @@ void setup()
   }
   else
   {
-    goToDeepSleep(true);
+    delay(2000);
   }
 
   // Now proceed with normal initialization
