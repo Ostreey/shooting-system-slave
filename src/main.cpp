@@ -78,6 +78,9 @@ bool justWokenUp = false; // Flag to track if we just woke up and need to wait f
 // Add these variables in the global scope
 int brightness = 255;
 unsigned long lastDisconnectTime = 0;
+// Add this global variable at the top with other globals
+bool pendingRestart = false;
+unsigned long restartTime = 0;
 
 unsigned long hitTime = 0;
 
@@ -548,13 +551,12 @@ class OTACommandCallbacks : public BLECharacteristicCallbacks
           {
             statusChar->setValue("SUCCESS");
             statusChar->notify();
-            Serial.println("OTA: All verification checks passed. Update successful, restarting...");
+            Serial.println("OTA: All verification checks passed. Update successful, scheduling restart...");
           }
 
-          // Ensure BLE message is sent before restart
-          Serial.flush();                        // Flush serial output
-          vTaskDelay(3000 / portTICK_PERIOD_MS); // Non-blocking delay to allow BLE transmission
-          ESP.restart();
+          // Schedule restart for later instead of doing it immediately
+          pendingRestart = true;
+          restartTime = millis() + 3000; // Restart in 3 seconds
         }
         else
         {
@@ -755,6 +757,8 @@ bool isResetAfterOTA()
   return false;
 }
 
+
+
 void setup()
 {
   delay(100);
@@ -923,6 +927,14 @@ void loop()
 {
   static unsigned long pressStartTime = 0;
   static bool buttonPressed = false;
+
+  // Check for pending restart
+  if (pendingRestart && millis() >= restartTime)
+  {
+    Serial.println("OTA: Executing scheduled restart...");
+    Serial.flush();
+    ESP.restart();
+  }
 
   // Button handling
   if (digitalRead(wakeUpButton) == LOW)
