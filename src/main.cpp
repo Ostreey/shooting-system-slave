@@ -240,18 +240,22 @@ int getBatteryPercentage()
 
 void goToDeepSleep(bool skipLedBlink = false)
 {
-  isGoingToSleep = true;
-
-  if (!skipLedBlink)
-  {
-    blinkLEDS();
-    delay(3000 / portTICK_PERIOD_MS);
-  }
-
-  digitalWrite(ledPowerEnable, LOW);
-  Serial.println("Going to deep sleep...");
-  esp_sleep_enable_ext0_wakeup(GPIO_NUM_15, 0);
-  esp_deep_sleep_start();
+    isGoingToSleep = true;
+    
+    // DISABLE WATCHDOG FIRST - before any delays or LED operations
+    esp_task_wdt_deinit();
+    
+    if (!skipLedBlink) {
+        // Use your existing blinkLEDs function
+        blinkLEDS();
+        
+        // Small delay to show the device is turning off
+        delay(500);  // 500ms delay
+    }
+    
+    Serial.println("Going to deep sleep...");
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_15, 0);
+    esp_deep_sleep_start();
 }
 
 // Function to validate wake-up by checking if button is held for required time
