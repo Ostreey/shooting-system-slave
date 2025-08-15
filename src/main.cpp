@@ -757,7 +757,8 @@ bool isResetAfterOTA()
   return false;
 }
 
-
+// Add a timer variable
+static unsigned long wakeUpResetTime = 0;
 
 void setup()
 {
@@ -944,22 +945,24 @@ void loop()
       pressStartTime = millis();
       buttonPressed = true;
       Serial.println("Button pressed");
+      
+      // RESET justWokenUp flag immediately when button is pressed
+      if (justWokenUp) {
+          justWokenUp = false;
+          Serial.println("Reset justWokenUp flag");
+      }
     }
-
-    // Check for long press while button is still held (skip if this is the wake-up press)
-    if (!justWokenUp && (millis() - pressStartTime) > TURN_OFF_TIME)
+    
+    // Check for long press while button is still held
+    if ((millis() - pressStartTime) > TURN_OFF_TIME)
     {
-      Serial.println("TURN OFF TIME DETECTED");
-      goToDeepSleep();
+        Serial.println("TURN OFF TIME DETECTED");
+        goToDeepSleep();
     }
   }
   else if (buttonPressed)
   {
     buttonPressed = false;
-
-    if (justWokenUp)
-    {
-      justWokenUp = false;
-    }
+    // Remove this line: justWokenUp = false; // Don't reset here anymore
   }
 }
