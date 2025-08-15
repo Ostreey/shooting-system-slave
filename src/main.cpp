@@ -15,7 +15,7 @@
 #define bleServerName "SHOOTING TARGET"
 
 // Firmware version - simple const
-const char *FIRMWARE_VERSION = "1.0.0";
+const char *FIRMWARE_VERSION = "1.0.1";
 
 #define SERVICE_UUID "91bad492-b950-4226-aa2b-4ede9fa42fff"
 #define CHARACTERISTIC "cba1d466-344c-4be3-ab3f-189f80dd75ff"
