@@ -240,28 +240,57 @@ int getBatteryPercentage()
 
 void goToDeepSleep(bool skipLedBlink = false)
 {
-    isGoingToSleep = true;
-    
-    // DISABLE WATCHDOG FIRST - before any delays or LED operations
-    esp_task_wdt_deinit();
-    
-    if (!skipLedBlink) {
-        // Use your existing blinkLEDs function
-        blinkLEDS();
-        
-        // Small delay to show the device is turning off
-        delay(500);  // 500ms delay
-    }
-    
-    Serial.println("Going to deep sleep...");
-    esp_sleep_enable_ext0_wakeup(GPIO_NUM_15, 0);
-    esp_deep_sleep_start();
+  isGoingToSleep = true;
+
+  // DISABLE WATCHDOG FIRST - before any delays or LED operations
+  esp_task_wdt_deinit();
+
+  if (!skipLedBlink)
+  {
+    // Use your existing blinkLEDs function
+    blinkLEDS();
+
+    // Small delay to show the device is turning off
+    delay(500); // 500ms delay
+  }
+
+  Serial.println("Going to deep sleep...");
+
+  // Configure GPIO15 properly before sleep
+  // Set as input with internal pull-up to prevent floating state
+  gpio_set_direction(GPIO_NUM_15, GPIO_MODE_INPUT);
+  gpio_set_pull_mode(GPIO_NUM_15, GPIO_PULLUP_ONLY);
+
+  // Add small delay to stabilize GPIO state
+  delay(100);
+
+  esp_err_t ext0_result = esp_sleep_enable_ext0_wakeup(GPIO_NUM_15, 0);
+  if (ext0_result != ESP_OK)
+  {
+    Serial.printf("ext0 wake-up failed, trying ext1: %s\n", esp_err_to_name(ext0_result));
+    esp_sleep_enable_ext1_wakeup(((1ULL << GPIO_NUM_15)), ESP_EXT1_WAKEUP_ANY_HIGH);
+  }
+
+  Serial.println("Deep sleep configuration complete");
+  Serial.flush(); // Ensure all serial data is sent before sleep
+
+  // Final delay to ensure all operations are complete
+  delay(50);
+
+  esp_deep_sleep_start();
 }
 
 // Function to validate wake-up by checking if button is held for required time
 bool validateWakeUp()
 {
   Serial.println("Validating wake-up - button must be held for 2 seconds...");
+
+  // Ensure GPIO15 is properly configured for reading
+  gpio_set_direction(GPIO_NUM_15, GPIO_MODE_INPUT);
+  gpio_set_pull_mode(GPIO_NUM_15, GPIO_PULLUP_ONLY);
+
+  // Small delay to stabilize GPIO state
+  delay(100);
 
   // Check if button is still pressed when we start validation
   if (digitalRead(wakeUpButton) != LOW)
@@ -772,21 +801,22 @@ void setup()
   Serial.println("Start");
 
   // Check wake-up cause FIRST, before any other initialization
-  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0)
-  {
-    Serial.println("Woken up from deep sleep");
-
-    // Validate wake-up by checking if button is held for 2 seconds
-    if (!validateWakeUp())
+  esp_sleep_wakeup_cause_t wakeup_cause = esp_sleep_get_wakeup_cause();
+  if (wakeup_cause == ESP_SLEEP_WAKEUP_EXT0)
     {
-      // Button was not held long enough, go back to sleep
-      Serial.println("Wake-up validation failed - returning to deep sleep");
-      goToDeepSleep(true); // Skip LED blink since nothing is initialized yet
-      return;              // This line will never be reached, but good practice
-    }
+      Serial.println("Woken up from deep sleep");
 
-    Serial.println("Wake-up validation successful - continuing normal operation");
-  }
+      // Validate wake-up by checking if button is held for 2 seconds
+      if (!validateWakeUp())
+      {
+        // Button was not held long enough, go back to sleep
+        Serial.println("Wake-up validation failed - returning to deep sleep");
+        goToDeepSleep(true); // Skip LED blink since nothing is initialized yet
+        return;              // This line will never be reached, but good practice
+      }
+
+      Serial.println("Wake-up validation successful - continuing normal operation");
+    }
   else
   {
     delay(2000);
@@ -801,9 +831,12 @@ void setup()
   digitalWrite(ledGreen, HIGH);
   pinMode(ledRed, OUTPUT);
   digitalWrite(ledRed, HIGH);
-  pinMode(wakeUpButton, INPUT_PULLUP); // Initialize button pin
-  pinMode(batteryPin, INPUT);          // Initialize battery pin
-  pinMode(chargingPin, INPUT_PULLUP);  // Initialize charging detection pin
+  // Configure wake-up button with proper pull-up and debouncing
+  pinMode(wakeUpButton, INPUT_PULLUP);
+  gpio_set_pull_mode(GPIO_NUM_15, GPIO_PULLUP_ONLY);
+  gpio_set_direction(GPIO_NUM_15, GPIO_MODE_INPUT);
+  pinMode(batteryPin, INPUT);         // Initialize battery pin
+  pinMode(chargingPin, INPUT_PULLUP); // Initialize charging detection pin
 
   sensor.begin();
   sensor.setCallback(ledOff);
@@ -949,19 +982,20 @@ void loop()
       pressStartTime = millis();
       buttonPressed = true;
       Serial.println("Button pressed");
-      
+
       // RESET justWokenUp flag immediately when button is pressed
-      if (justWokenUp) {
-          justWokenUp = false;
-          Serial.println("Reset justWokenUp flag");
+      if (justWokenUp)
+      {
+        justWokenUp = false;
+        Serial.println("Reset justWokenUp flag");
       }
     }
-    
+
     // Check for long press while button is still held
     if ((millis() - pressStartTime) > TURN_OFF_TIME)
     {
-        Serial.println("TURN OFF TIME DETECTED");
-        goToDeepSleep();
+      Serial.println("TURN OFF TIME DETECTED");
+      goToDeepSleep();
     }
   }
   else if (buttonPressed)
