@@ -15,7 +15,7 @@
 #define bleServerName "SHOOTING TARGET"
 
 // Firmware version - simple const
-const char *FIRMWARE_VERSION = "1.0.1";
+const char *FIRMWARE_VERSION = "1.0.2";
 
 #define SERVICE_UUID "91bad492-b950-4226-aa2b-4ede9fa42fff"
 #define CHARACTERISTIC "cba1d466-344c-4be3-ab3f-189f80dd75ff"
@@ -803,20 +803,20 @@ void setup()
   // Check wake-up cause FIRST, before any other initialization
   esp_sleep_wakeup_cause_t wakeup_cause = esp_sleep_get_wakeup_cause();
   if (wakeup_cause == ESP_SLEEP_WAKEUP_EXT0)
+  {
+    Serial.println("Woken up from deep sleep");
+
+    // Validate wake-up by checking if button is held for 2 seconds
+    if (!validateWakeUp())
     {
-      Serial.println("Woken up from deep sleep");
-
-      // Validate wake-up by checking if button is held for 2 seconds
-      if (!validateWakeUp())
-      {
-        // Button was not held long enough, go back to sleep
-        Serial.println("Wake-up validation failed - returning to deep sleep");
-        goToDeepSleep(true); // Skip LED blink since nothing is initialized yet
-        return;              // This line will never be reached, but good practice
-      }
-
-      Serial.println("Wake-up validation successful - continuing normal operation");
+      // Button was not held long enough, go back to sleep
+      Serial.println("Wake-up validation failed - returning to deep sleep");
+      goToDeepSleep(true); // Skip LED blink since nothing is initialized yet
+      return;              // This line will never be reached, but good practice
     }
+
+    Serial.println("Wake-up validation successful - continuing normal operation");
+  }
   else
   {
     delay(2000);
