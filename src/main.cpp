@@ -96,6 +96,7 @@ void sendFirmwareVersion();
 void initialDeviceInfoTask(void *pvParameters);
 void ledOff(int piezoValue);
 void setLeds(bool on);
+void setRgbColor(int red, int green, int blue);
 
 enum class BLECommand
 {
@@ -105,6 +106,11 @@ enum class BLECommand
   BLINK,
   GAME1,
   SET_BRIGHTNESS, // New command for LED brightness
+  SET_RGB_COLOR,  // New: rgb:r,g,b
+  SET_COLOR,      // New: color:red/green/blue/white/off
+  SET_RED,        // New: r:value
+  SET_GREEN,      // New: g:value
+  SET_BLUE,       // New: b:value
 };
 
 // Add a struct to hold command and value
@@ -119,8 +125,38 @@ BLECommandData parseCommand(const std::string &value)
 {
   BLECommandData result = {BLECommand::UNKNOWN, 0};
 
-  // Check if the command starts with "b:"
-  if (value.substr(0, 2) == "b:")
+  // RGB color command: rgb:255,0,0
+  if (value.substr(0, 4) == "rgb:")
+  {
+    result.command = BLECommand::SET_RGB_COLOR;
+    // Store the RGB string for parsing in the command handler
+    result.value = 0; // We'll parse RGB values in the handler
+    return result;
+  }
+
+  // Predefined color command: color:red, color:green, etc.
+  if (value.substr(0, 6) == "color:")
+  {
+    result.command = BLECommand::SET_COLOR;
+    // Store the color name for parsing in the handler
+    result.value = 0; // We'll parse color name in the handler
+    return result;
+  }
+
+  // Individual channel commands: r:255, g:128, b:0
+  if (value.substr(0, 2) == "r:")
+  {
+    result.command = BLECommand::SET_RED;
+    result.value = std::stoi(value.substr(2));
+    return result;
+  }
+  else if (value.substr(0, 2) == "g:")
+  {
+    result.command = BLECommand::SET_GREEN;
+    result.value = std::stoi(value.substr(2));
+    return result;
+  }
+  else if (value.substr(0, 2) == "b:")
   {
     result.command = BLECommand::SET_BRIGHTNESS;
     result.value = std::stoi(value.substr(2));
@@ -136,6 +172,11 @@ BLECommandData parseCommand(const std::string &value)
     result.command = BLECommand::GAME1;
   else if (value == "blink")
     result.command = BLECommand::BLINK;
+  else if (value == "off")
+  {
+    result.command = BLECommand::SET_COLOR;
+    result.value = 0; // We'll handle "off" in the color handler
+  }
 
   return result;
 }
@@ -195,9 +236,9 @@ void blinkLEDS()
 {
   for (int i = 0; i < 3; i++)
   {
-    setLeds(true);
+    setRgbColor(0, 255, 0);
     vTaskDelay(200 / portTICK_PERIOD_MS);
-    setLeds(false);
+    setRgbColor(0, 0, 0);
     vTaskDelay(200 / portTICK_PERIOD_MS);
   }
 }
@@ -339,6 +380,82 @@ void setLeds(bool on)
   }
 }
 
+// New RGB color control functions with brightness support
+void setRgbColor(int red, int green, int blue)
+{
+  // Apply global brightness to each color channel
+  int finalRed = (red * brightness) / 255;
+  int finalGreen = (green * brightness) / 255;
+  int finalBlue = (blue * brightness) / 255;
+  
+  ledcWrite(PWM_CHANNEL_RED, finalRed);
+  ledcWrite(PWM_CHANNEL_GREEN, finalGreen);
+  ledcWrite(PWM_CHANNEL_BLUE, finalBlue);
+  
+  Serial.printf("RGB set to: R=%d, G=%d, B=%d (brightness=%d)\n", finalRed, finalGreen, finalBlue, brightness);
+}
+
+void setRedChannel(int value)
+{
+  int finalValue = (value * brightness) / 255;
+  ledcWrite(PWM_CHANNEL_RED, finalValue);
+  Serial.printf("Red channel set to: %d (brightness=%d)\n", finalValue, brightness);
+}
+
+void setGreenChannel(int value)
+{
+  int finalValue = (value * brightness) / 255;
+  ledcWrite(PWM_CHANNEL_GREEN, finalValue);
+  Serial.printf("Green channel set to: %d (brightness=%d)\n", finalValue, brightness);
+}
+
+void setBlueChannel(int value)
+{
+  int finalValue = (value * brightness) / 255;
+  ledcWrite(PWM_CHANNEL_BLUE, finalValue);
+  Serial.printf("Blue channel set to: %d (brightness=%d)\n", finalValue, brightness);
+}
+
+void setPredefinedColor(const String& colorName)
+{
+  if (colorName == "red")
+  {
+    setRgbColor(255, 0, 0);
+  }
+  else if (colorName == "green")
+  {
+    setRgbColor(0, 255, 0);
+  }
+  else if (colorName == "blue")
+  {
+    setRgbColor(0, 0, 255);
+  }
+  else if (colorName == "white")
+  {
+    setRgbColor(255, 255, 255);
+  }
+  else if (colorName == "yellow")
+  {
+    setRgbColor(255, 255, 0);
+  }
+  else if (colorName == "magenta")
+  {
+    setRgbColor(255, 0, 255);
+  }
+  else if (colorName == "cyan")
+  {
+    setRgbColor(0, 255, 255);
+  }
+  else if (colorName == "off")
+  {
+    setRgbColor(0, 0, 0);
+  }
+  else
+  {
+    Serial.printf("Unknown color: %s\n", colorName.c_str());
+  }
+}
+
 // Battery monitoring task
 void batteryMonitorTask(void *pvParameters)
 {
@@ -387,11 +504,13 @@ void ledStatusTask(void *pvParameters)
   {
     if (!deviceConnected && !isGoingToSleep)
     {
-      setLeds(false);
+      // Turn off all LEDs
+      setRgbColor(0, 0, 0);
       vTaskDelay(1000 / portTICK_PERIOD_MS);
-      setLeds(true);
+      // Blink only green LED to indicate "waiting for connection"
+      setRgbColor(0, 255, 0);
       vTaskDelay(1000 / portTICK_PERIOD_MS);
-      Serial.println("Device not connected");
+      Serial.println("Device not connected - blinking green");
     }
     else
     {
@@ -427,6 +546,64 @@ class WriteCallbacks : public BLECharacteristicCallbacks
 
     case BLECommand::SET_BRIGHTNESS:
       brightness = constrain(cmdData.value, 0, 255);
+      Serial.printf("Brightness set to: %d\n", brightness);
+      break;
+
+    case BLECommand::SET_RGB_COLOR:
+      {
+        // Parse RGB values from "rgb:r,g,b" format
+        std::string rgbStr = value.substr(4); // Remove "rgb:" prefix
+        size_t firstComma = rgbStr.find(',');
+        size_t secondComma = rgbStr.find(',', firstComma + 1);
+        
+        if (firstComma != std::string::npos && secondComma != std::string::npos)
+        {
+          int red = std::stoi(rgbStr.substr(0, firstComma));
+          int green = std::stoi(rgbStr.substr(firstComma + 1, secondComma - firstComma - 1));
+          int blue = std::stoi(rgbStr.substr(secondComma + 1));
+          
+          // Constrain values to 0-255 range
+          red = constrain(red, 0, 255);
+          green = constrain(green, 0, 255);
+          blue = constrain(blue, 0, 255);
+          
+          setRgbColor(red, green, blue);
+        }
+        else
+        {
+          Serial.println("Invalid RGB format. Use: rgb:r,g,b");
+        }
+      }
+      break;
+
+    case BLECommand::SET_COLOR:
+      {
+        if (value == "off")
+        {
+          setPredefinedColor("off");
+        }
+        else if (value.substr(0, 6) == "color:")
+        {
+          std::string colorName = value.substr(6); // Remove "color:" prefix
+          setPredefinedColor(String(colorName.c_str()));
+        }
+        else
+        {
+          Serial.println("Invalid color command. Use: color:red/green/blue/white/yellow/magenta/cyan/off");
+        }
+      }
+      break;
+
+    case BLECommand::SET_RED:
+      setRedChannel(constrain(cmdData.value, 0, 255));
+      break;
+
+    case BLECommand::SET_GREEN:
+      setGreenChannel(constrain(cmdData.value, 0, 255));
+      break;
+
+    case BLECommand::SET_BLUE:
+      setBlueChannel(constrain(cmdData.value, 0, 255));
       break;
     }
   }
@@ -796,7 +973,6 @@ static unsigned long wakeUpResetTime = 0;
 void setup()
 {
   delay(100);
-
   Serial.begin(115200);
   Serial.println("Start");
 
@@ -820,36 +996,44 @@ void setup()
   else
   {
     delay(2000);
+    // For fresh boots, add extra stabilization time
+    delay(3000); // Additional delay for power supply to stabilize
   }
 
-  // Now proceed with normal initialization
+  // Initialize GPIO first (low power)
   pinMode(ledPowerEnable, OUTPUT);
   digitalWrite(ledPowerEnable, HIGH);
   pinMode(ledBlue, OUTPUT);
-  digitalWrite(ledBlue, HIGH);
+  digitalWrite(ledBlue, LOW);
   pinMode(ledGreen, OUTPUT);
   digitalWrite(ledGreen, HIGH);
   pinMode(ledRed, OUTPUT);
-  digitalWrite(ledRed, HIGH);
-  // Configure wake-up button with proper pull-up and debouncing
+  digitalWrite(ledRed, LOW);
   pinMode(wakeUpButton, INPUT_PULLUP);
   gpio_set_pull_mode(GPIO_NUM_15, GPIO_PULLUP_ONLY);
   gpio_set_direction(GPIO_NUM_15, GPIO_MODE_INPUT);
-  pinMode(batteryPin, INPUT);         // Initialize battery pin
-  pinMode(chargingPin, INPUT_PULLUP); // Initialize charging detection pin
+  pinMode(batteryPin, INPUT);
+  pinMode(chargingPin, INPUT_PULLUP);
 
+  // Wait before initializing power-hungry components
+  if (wakeup_cause == !ESP_SLEEP_WAKEUP_EXT0){
+    delay(1000);
+  }
+
+  // Initialize sensor (moderate power)
   sensor.begin();
   sensor.setCallback(ledOff);
+  
+  if (wakeup_cause == !ESP_SLEEP_WAKEUP_EXT0){
+    digitalWrite(ledGreen, LOW);
+    delay(1000);
+  }
 
-  // Determine the device name based on sensorNumber
-  String deviceName;
-
-  deviceName = bleServerName;
+  // Initialize BLE (high power)
+  String deviceName = bleServerName;
   Serial.print(bleServerName);
-
-  // Initialize BLE Device with the device name
   BLEDevice::init(deviceName.c_str());
-
+  
   // Create the BLE Server
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
