@@ -1,1190 +1,144 @@
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
-#include <Wire.h>
 #include <Arduino.h>
-#include "PiezoSensor.h"
-
-#include <esp_adc_cal.h>
-#include <Update.h>
-#include <esp_ota_ops.h>
+#include <Wire.h>
 #include <esp_task_wdt.h>
-
-// BLE server name
-#define bleServerName "SHOOTING TARGET"
-
-// Firmware version - simple const
-const char *FIRMWARE_VERSION = "1.0.2";
-
-#define SERVICE_UUID "91bad492-b950-4226-aa2b-4ede9fa42fff"
-#define CHARACTERISTIC "cba1d466-344c-4be3-ab3f-189f80dd75ff"
-#define BATTERY_CHARACTERISTIC "cba1d466-344c-4be3-ab3f-189f80dd76ff"
-#define FIRMWARE_VERSION_CHARACTERISTIC "cba1d466-344c-4be3-ab3f-189f80dd77ff"
-
-// OTA service UUIDs
-#define OTA_SERVICE_UUID "12345678-1234-5678-1234-56789abc0000"
-#define OTA_COMMAND_CHAR_UUID "12345678-1234-5678-1234-56789abc0001"
-#define OTA_DATA_CHAR_UUID "12345678-1234-5678-1234-56789abc0002"
-#define OTA_STATUS_CHAR_UUID "12345678-1234-5678-1234-56789abc0003"
-
-// Add these constants for ADC calibration
-#define DEFAULT_VREF 1100         // Default reference voltage in mV
-#define ADC_SAMPLES 64            // Number of samples for averaging
-#define ADC_ATTEN ADC_ATTEN_DB_11 // 11dB attenuation for 0-3.3V range
-
-// Add these constants near the top with other definitions
-#define PWM_FREQUENCY 5000
-#define PWM_RESOLUTION 8 // 8-bit resolution (0-255)
-#define PWM_CHANNEL_RED 0
-#define PWM_CHANNEL_GREEN 1
-#define PWM_CHANNEL_BLUE 2
-
-float temp;
-
-bool deviceConnected = false;
-
-const int ledBlue = 17;
-const int ledGreen = 18;
-const int ledRed = 19;
-const int wakeUpButton = 15; // New button pin definition
-const int batteryPin = 33;   // Battery voltage measurement pin
-const int ledPowerEnable = 4;
-const int chargingPin = 13; // Charging detection pin
-
-PiezoSensor sensor(32, 400);
-
-BLECharacteristic *piezoCharacteristic;
-BLECharacteristic *batteryCharacteristic;
-BLECharacteristic *firmwareVersionCharacteristic;
-
-BLEService *piezoService;
-BLEServer *pServer;
-esp_adc_cal_characteristics_t adc_chars;
-
-// Task handle for battery monitoring
-TaskHandle_t batteryTaskHandle = NULL;
-
-// Add this task handle near the top with other global variables
-TaskHandle_t ledStatusTaskHandle = NULL;
-// Add these constants at the top with other definitions
-const int TURN_OFF_TIME = 2000;     // 2 seconds for long press
-const int WAKE_UP_HOLD_TIME = 2000; // 2 seconds required to confirm wake up
-
-const unsigned long AUTO_SLEEP_TIME = 5 * 60 * 1000; // 5 minutes in milliseconds
-bool isGoingToSleep = false;
-// State tracking for wake-up behavior
-bool justWokenUp = false; // Flag to track if we just woke up and need to wait for button release
-// Add these variables in the global scope
-int brightness = 255;
-unsigned long lastDisconnectTime = 0;
-// Add this global variable at the top with other globals
-bool pendingRestart = false;
-unsigned long restartTime = 0;
-
-unsigned long hitTime = 0;
-
-// OTA state
-bool otaInProgress = false;
-size_t otaFirmwareSize = 0;
-size_t otaReceivedSize = 0;
-const int OTA_CHUNK_SIZE = 256; // Conservative chunk size to prevent watchdog timeout
-
-int getBatteryPercentage();
-void sendBatteryLevel(int percentage);
-void sendFirmwareVersion();
-void initialDeviceInfoTask(void *pvParameters);
-void ledOff(int piezoValue);
-void setLeds(bool on);
-void setRgbColor(int red, int green, int blue);
-
-enum class BLECommand
-{
-  UNKNOWN,
-  START,
-  SLEEP,
-  BLINK,
-  GAME1,
-  SET_BRIGHTNESS, // New command for LED brightness
-  SET_RGB_COLOR,  // New: rgb:r,g,b
-  SET_COLOR,      // New: color:red/green/blue/white/off
-  SET_RED,        // New: r:value
-  SET_GREEN,      // New: g:value
-  SET_BLUE,       // New: b:value
-};
-
-// Add a struct to hold command and value
-struct BLECommandData
-{
-  BLECommand command;
-  int value;
-};
-
-// Update the command parsing function
-BLECommandData parseCommand(const std::string &value)
-{
-  BLECommandData result = {BLECommand::UNKNOWN, 0};
-
-  // RGB color command: rgb:255,0,0
-  if (value.substr(0, 4) == "rgb:")
-  {
-    result.command = BLECommand::SET_RGB_COLOR;
-    // Store the RGB string for parsing in the command handler
-    result.value = 0; // We'll parse RGB values in the handler
-    return result;
-  }
-
-  // Predefined color command: color:red, color:green, etc.
-  if (value.substr(0, 6) == "color:")
-  {
-    result.command = BLECommand::SET_COLOR;
-    // Store the color name for parsing in the handler
-    result.value = 0; // We'll parse color name in the handler
-    return result;
-  }
-
-  // Individual channel commands: r:255, g:128, b:0
-  if (value.substr(0, 2) == "r:")
-  {
-    result.command = BLECommand::SET_RED;
-    result.value = std::stoi(value.substr(2));
-    return result;
-  }
-  else if (value.substr(0, 2) == "g:")
-  {
-    result.command = BLECommand::SET_GREEN;
-    result.value = std::stoi(value.substr(2));
-    return result;
-  }
-  else if (value.substr(0, 2) == "b:")
-  {
-    result.command = BLECommand::SET_BRIGHTNESS;
-    result.value = std::stoi(value.substr(2));
-    return result;
-  }
-
-  // Handle valueless commands
-  if (value == "start")
-    result.command = BLECommand::START;
-  else if (value == "sleep")
-    result.command = BLECommand::SLEEP;
-  else if (value == "game1")
-    result.command = BLECommand::GAME1;
-  else if (value == "blink")
-    result.command = BLECommand::BLINK;
-  else if (value == "off")
-  {
-    result.command = BLECommand::SET_COLOR;
-    result.value = 0; // We'll handle "off" in the color handler
-  }
-
-  return result;
-}
-
-void ledOff(int piezoValue)
-{
-  setLeds(false);
-  if (deviceConnected)
-  {
-    uint8_t data[4];
-    uint16_t timeInHundredths = (millis() - hitTime) / 10;
-    data[0] = piezoValue & 0xFF;
-    data[1] = piezoValue >> 8;
-    data[2] = timeInHundredths & 0xFF;
-    data[3] = timeInHundredths >> 8;
-    piezoCharacteristic->setValue(data, 4);
-    piezoCharacteristic->notify();
-    Serial.print("Sent piezo value: ");
-    Serial.println(piezoValue);
-  }
-  else
-  {
-    Serial.println("Device not connected, cannot send notification.");
-  }
-}
-
-void initialDeviceInfoTask(void *pvParameters)
-{
-  vTaskDelay(2000 / portTICK_PERIOD_MS); // Wait for connection to stabilize
-
-  // Send battery level
-  int percentage = getBatteryPercentage();
-  sendBatteryLevel(percentage);
-
-  // Send firmware version
-  sendFirmwareVersion();
-
-  vTaskDelete(NULL); // Delete the task after it's done
-}
-
-void sendBatteryLevel(int percentage)
-{
-  if (deviceConnected)
-  {
-    String valueToSend = String(percentage);
-    batteryCharacteristic->setValue(valueToSend.c_str());
-    batteryCharacteristic->notify();
-    Serial.println("Battery level sent: " + valueToSend);
-  }
-  else
-  {
-    Serial.println("Device not connected, cannot send notification.");
-  }
-}
-
-void blinkLEDS()
-{
-  for (int i = 0; i < 3; i++)
-  {
-    setRgbColor(0, 255, 0);
-    vTaskDelay(200 / portTICK_PERIOD_MS);
-    setRgbColor(0, 0, 0);
-    vTaskDelay(200 / portTICK_PERIOD_MS);
-  }
-}
-
-int getBatteryPercentage()
-{
-  int percentage = 100;
-  // Read multiple samples and average them
-  uint32_t adc_reading = 0;
-  for (int i = 0; i < ADC_SAMPLES; i++)
-  {
-    adc_reading += analogRead(batteryPin);
-  }
-  adc_reading /= ADC_SAMPLES;
-
-  // Convert to voltage using calibration
-  uint32_t voltage_mv = esp_adc_cal_raw_to_voltage(adc_reading, &adc_chars);
-  float voltage = voltage_mv / 1000.0; // Convert to volts
-
-  // Convert to actual battery voltage (multiply by 1.5 due to voltage divider)
-  float battery_voltage = voltage * 1.5;
-
-  // Convert to percentage (assuming 4.2V is 100% and 3.6V is 0%)
-  percentage = map(battery_voltage * 100, 340, 420, 0, 100);
-  percentage = constrain(percentage, 0, 100);
-
-  // // Send through BLE
-  // String valueToSend = String(percentage);
-  // Serial.print("Raw ADC: ");
-  // Serial.print(adc_reading);
-  // Serial.print(", Divider Voltage: ");
-  // Serial.print(voltage);
-  // Serial.print("V, Battery Voltage: ");
-  // Serial.print(battery_voltage);
-  // Serial.print("V, Percentage: ");
-  // Serial.print(percentage);
-  // Serial.println("%");
-  return percentage;
-}
-
-void goToDeepSleep(bool skipLedBlink = false)
-{
-  isGoingToSleep = true;
-
-  // DISABLE WATCHDOG FIRST - before any delays or LED operations
-  esp_task_wdt_deinit();
-
-  if (!skipLedBlink)
-  {
-    // Use your existing blinkLEDs function
-    blinkLEDS();
-
-    // Small delay to show the device is turning off
-    delay(500); // 500ms delay
-  }
-
-  Serial.println("Going to deep sleep...");
-
-  // Configure GPIO15 properly before sleep
-  // Set as input with internal pull-up to prevent floating state
-  gpio_set_direction(GPIO_NUM_15, GPIO_MODE_INPUT);
-  gpio_set_pull_mode(GPIO_NUM_15, GPIO_PULLUP_ONLY);
-
-  // Add small delay to stabilize GPIO state
-  delay(100);
-
-  esp_err_t ext0_result = esp_sleep_enable_ext0_wakeup(GPIO_NUM_15, 0);
-  if (ext0_result != ESP_OK)
-  {
-    Serial.printf("ext0 wake-up failed, trying ext1: %s\n", esp_err_to_name(ext0_result));
-    esp_sleep_enable_ext1_wakeup(((1ULL << GPIO_NUM_15)), ESP_EXT1_WAKEUP_ANY_HIGH);
-  }
-
-  Serial.println("Deep sleep configuration complete");
-  Serial.flush(); // Ensure all serial data is sent before sleep
-
-  // Final delay to ensure all operations are complete
-  delay(50);
-
-  esp_deep_sleep_start();
-}
-
-// Function to validate wake-up by checking if button is held for required time
-bool validateWakeUp()
-{
-  Serial.println("Validating wake-up - button must be held for 2 seconds...");
-
-  // Ensure GPIO15 is properly configured for reading
-  gpio_set_direction(GPIO_NUM_15, GPIO_MODE_INPUT);
-  gpio_set_pull_mode(GPIO_NUM_15, GPIO_PULLUP_ONLY);
-
-  // Small delay to stabilize GPIO state
-  delay(100);
-
-  // Check if button is still pressed when we start validation
-  if (digitalRead(wakeUpButton) != LOW)
-  {
-    Serial.println("Button not pressed during validation - going back to sleep");
-    return false;
-  }
-
-  unsigned long startTime = millis();
-
-  while ((millis() - startTime) < WAKE_UP_HOLD_TIME)
-  {
-    // Check if button was released during the hold period
-    if (digitalRead(wakeUpButton) != LOW)
-    {
-      Serial.println("Button released before 2 seconds - going back to sleep");
-      return false;
-    }
-
-    delay(50); // Small delay to prevent excessive polling
-  }
-
-  // If we reach here, button was held for full 2 seconds
-  Serial.println("Wake-up validated - button held for 2 seconds");
-
-  // Set flag to indicate we just woke up successfully
-  // This will prevent turn-off detection for the current button press
-  justWokenUp = true;
-
-  return true;
-}
-
-void setLeds(bool on)
-{
-  if (on)
-  {
-    ledcWrite(PWM_CHANNEL_RED, brightness);
-    ledcWrite(PWM_CHANNEL_GREEN, brightness);
-    ledcWrite(PWM_CHANNEL_BLUE, brightness);
-  }
-  else
-  {
-    ledcWrite(PWM_CHANNEL_RED, 0);
-    ledcWrite(PWM_CHANNEL_GREEN, 0);
-    ledcWrite(PWM_CHANNEL_BLUE, 0);
-  }
-}
-
-// New RGB color control functions with brightness support
-void setRgbColor(int red, int green, int blue)
-{
-  // Apply global brightness to each color channel
-  int finalRed = (red * brightness) / 255;
-  int finalGreen = (green * brightness) / 255;
-  int finalBlue = (blue * brightness) / 255;
-  
-  ledcWrite(PWM_CHANNEL_RED, finalRed);
-  ledcWrite(PWM_CHANNEL_GREEN, finalGreen);
-  ledcWrite(PWM_CHANNEL_BLUE, finalBlue);
-  
-  Serial.printf("RGB set to: R=%d, G=%d, B=%d (brightness=%d)\n", finalRed, finalGreen, finalBlue, brightness);
-}
-
-void setRedChannel(int value)
-{
-  int finalValue = (value * brightness) / 255;
-  ledcWrite(PWM_CHANNEL_RED, finalValue);
-  Serial.printf("Red channel set to: %d (brightness=%d)\n", finalValue, brightness);
-}
-
-void setGreenChannel(int value)
-{
-  int finalValue = (value * brightness) / 255;
-  ledcWrite(PWM_CHANNEL_GREEN, finalValue);
-  Serial.printf("Green channel set to: %d (brightness=%d)\n", finalValue, brightness);
-}
-
-void setBlueChannel(int value)
-{
-  int finalValue = (value * brightness) / 255;
-  ledcWrite(PWM_CHANNEL_BLUE, finalValue);
-  Serial.printf("Blue channel set to: %d (brightness=%d)\n", finalValue, brightness);
-}
-
-void setPredefinedColor(const String& colorName)
-{
-  if (colorName == "red")
-  {
-    setRgbColor(255, 0, 0);
-  }
-  else if (colorName == "green")
-  {
-    setRgbColor(0, 255, 0);
-  }
-  else if (colorName == "blue")
-  {
-    setRgbColor(0, 0, 255);
-  }
-  else if (colorName == "white")
-  {
-    setRgbColor(255, 255, 255);
-  }
-  else if (colorName == "yellow")
-  {
-    setRgbColor(255, 255, 0);
-  }
-  else if (colorName == "magenta")
-  {
-    setRgbColor(255, 0, 255);
-  }
-  else if (colorName == "cyan")
-  {
-    setRgbColor(0, 255, 255);
-  }
-  else if (colorName == "off")
-  {
-    setRgbColor(0, 0, 0);
-  }
-  else
-  {
-    Serial.printf("Unknown color: %s\n", colorName.c_str());
-  }
-}
-
-// Battery monitoring task
-void batteryMonitorTask(void *pvParameters)
-{
-  // ADC calibration
-
-  esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN, ADC_WIDTH_BIT_12, DEFAULT_VREF, &adc_chars);
-
-  for (;;)
-  {
-
-    int percentage = getBatteryPercentage();
-    sendBatteryLevel(percentage);
-
-    // Check for charging - if charging pin goes low, charger is working
-    if (digitalRead(chargingPin) == LOW)
-    {
-      Serial.println("Charging detected, going to sleep");
-      goToDeepSleep(true);
-    }
-
-    if (percentage < 5)
-    {
-      Serial.println("Battery low, going to sleep");
-      goToDeepSleep();
-    }
-
-    // Check for auto-sleep after timeout when not connected
-    if (!deviceConnected && lastDisconnectTime > 0)
-    {
-      unsigned long disconnectedTime = millis() - lastDisconnectTime;
-      if (disconnectedTime >= AUTO_SLEEP_TIME)
-      {
-        Serial.println("No connection for 5 minutes, going to sleep");
-        goToDeepSleep();
-      }
-    }
-
-    vTaskDelay(30000 / portTICK_PERIOD_MS); // 30 seconds delay
-  }
-}
-
-// Add this new task function before setup()
-void ledStatusTask(void *pvParameters)
-{
-  for (;;)
-  {
-    if (!deviceConnected && !isGoingToSleep)
-    {
-      // Turn off all LEDs
-      setRgbColor(0, 0, 0);
-      vTaskDelay(1000 / portTICK_PERIOD_MS);
-      // Blink only green LED to indicate "waiting for connection"
-      setRgbColor(0, 255, 0);
-      vTaskDelay(1000 / portTICK_PERIOD_MS);
-      Serial.println("Device not connected - blinking green");
-    }
-    else
-    {
-      vTaskDelay(100 / portTICK_PERIOD_MS);
-    }
-  }
-}
-
-class WriteCallbacks : public BLECharacteristicCallbacks
-{
-  void onWrite(BLECharacteristic *pCharacteristic)
-  {
-    std::string value = pCharacteristic->getValue();
-    Serial.print("Received value: ");
-    Serial.println(value.c_str());
-
-    BLECommandData cmdData = parseCommand(value);
-
-    switch (cmdData.command)
-    {
-    case BLECommand::START:
-      hitTime = millis();
-      setLeds(true);
-      break;
-
-    case BLECommand::SLEEP:
-      goToDeepSleep();
-      break;
-
-    case BLECommand::BLINK:
-      blinkLEDS();
-      break;
-
-    case BLECommand::SET_BRIGHTNESS:
-      brightness = constrain(cmdData.value, 0, 255);
-      Serial.printf("Brightness set to: %d\n", brightness);
-      break;
-
-    case BLECommand::SET_RGB_COLOR:
-      {
-        // Parse RGB values from "rgb:r,g,b" format
-        std::string rgbStr = value.substr(4); // Remove "rgb:" prefix
-        size_t firstComma = rgbStr.find(',');
-        size_t secondComma = rgbStr.find(',', firstComma + 1);
-        
-        if (firstComma != std::string::npos && secondComma != std::string::npos)
-        {
-          int red = std::stoi(rgbStr.substr(0, firstComma));
-          int green = std::stoi(rgbStr.substr(firstComma + 1, secondComma - firstComma - 1));
-          int blue = std::stoi(rgbStr.substr(secondComma + 1));
-          
-          // Constrain values to 0-255 range
-          red = constrain(red, 0, 255);
-          green = constrain(green, 0, 255);
-          blue = constrain(blue, 0, 255);
-          
-          setRgbColor(red, green, blue);
-        }
-        else
-        {
-          Serial.println("Invalid RGB format. Use: rgb:r,g,b");
-        }
-      }
-      break;
-
-    case BLECommand::SET_COLOR:
-      {
-        if (value == "off")
-        {
-          setPredefinedColor("off");
-        }
-        else if (value.substr(0, 6) == "color:")
-        {
-          std::string colorName = value.substr(6); // Remove "color:" prefix
-          setPredefinedColor(String(colorName.c_str()));
-        }
-        else
-        {
-          Serial.println("Invalid color command. Use: color:red/green/blue/white/yellow/magenta/cyan/off");
-        }
-      }
-      break;
-
-    case BLECommand::SET_RED:
-      setRedChannel(constrain(cmdData.value, 0, 255));
-      break;
-
-    case BLECommand::SET_GREEN:
-      setGreenChannel(constrain(cmdData.value, 0, 255));
-      break;
-
-    case BLECommand::SET_BLUE:
-      setBlueChannel(constrain(cmdData.value, 0, 255));
-      break;
-    }
-  }
-};
-
-// Setup callbacks onConnect and onDisconnect
-class MyServerCallbacks : public BLEServerCallbacks
-{
-  void onConnect(BLEServer *pServer)
-  {
-    Serial.println("Device connected");
-    deviceConnected = true;
-    lastDisconnectTime = 0; // Reset disconnect timer when connected
-    blinkLEDS();
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    xTaskCreate(initialDeviceInfoTask, "InitDeviceInfo", 2048, NULL, 1, NULL);
-  };
-  void onDisconnect(BLEServer *pServer)
-  {
-    Serial.println("Device disconnected");
-    deviceConnected = false;
-    lastDisconnectTime = millis(); // Record disconnection time
-    pServer->getAdvertising()->start();
-  }
-};
-
-// --- OTA CALLBACKS ---------------------------------------------------------
-class OTACommandCallbacks : public BLECharacteristicCallbacks
-{
-  void onWrite(BLECharacteristic *chr) override
-  {
-    std::string cmd = chr->getValue();
-    if (cmd.rfind("START:", 0) == 0)
-    {
-      otaFirmwareSize = atoi(cmd.substr(6).c_str());
-
-      // Step 1: Verify OTA partition availability
-      const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
-      if (update_partition == NULL)
-      {
-        BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-        if (otaService)
-        {
-          BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-          if (statusChar)
-          {
-            statusChar->setValue("ERROR:NO_OTA_PARTITION");
-            statusChar->notify();
-            Serial.println("OTA: No OTA partition available");
-          }
-        }
-        return;
-      }
-
-      // Step 2: Check if firmware size fits in partition
-      if (otaFirmwareSize > update_partition->size)
-      {
-        BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-        if (otaService)
-        {
-          BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-          if (statusChar)
-          {
-            String error = "ERROR:FIRMWARE_TOO_LARGE:" + String(otaFirmwareSize) + ">" + String(update_partition->size);
-            statusChar->setValue(error.c_str());
-            statusChar->notify();
-            Serial.printf("OTA: Firmware too large: %d > %d\n", otaFirmwareSize, update_partition->size);
-          }
-        }
-        return;
-      }
-
-      Serial.printf("OTA: Starting update - Size: %d bytes, Partition: %s (0x%x)\n",
-                    otaFirmwareSize, update_partition->label, update_partition->address);
-
-      // Step 3: Begin the update
-      if (Update.begin(otaFirmwareSize))
-      {
-        otaInProgress = true;
-        otaReceivedSize = 0;
-        BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-        if (otaService)
-        {
-          BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-          if (statusChar)
-          {
-            statusChar->setValue("READY");
-            statusChar->notify();
-            Serial.println("OTA: Ready to receive firmware");
-          }
-        }
-      }
-      else
-      {
-        BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-        if (otaService)
-        {
-          BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-          if (statusChar)
-          {
-            String errorDetails = "ERROR:OTA_BEGIN:" + String(Update.errorString());
-            statusChar->setValue(errorDetails.c_str());
-            statusChar->notify();
-            Serial.printf("OTA: Failed to begin update - %s\n", Update.errorString());
-          }
-        }
-      }
-    }
-    else if (cmd == "END")
-    {
-      Serial.println("OTA: Ending update and performing verification...");
-
-      // Step 1: End the update process
-      if (Update.end(true))
-      {
-        // Step 2: Perform comprehensive verification
-        bool verificationPassed = true;
-        String errorMsg = "";
-
-        // Check if update is finished properly
-        if (!Update.isFinished())
-        {
-          verificationPassed = false;
-          errorMsg = "Update not finished";
-          Serial.println("OTA: Verification failed - update not finished");
-        }
-
-        // Check if there were any errors during update
-        if (Update.hasError())
-        {
-          verificationPassed = false;
-          errorMsg = "Update has errors: " + String(Update.errorString());
-          Serial.printf("OTA: Verification failed - %s\n", Update.errorString());
-        }
-
-        // Verify we received the expected amount of data
-        if (otaReceivedSize != otaFirmwareSize)
-        {
-          verificationPassed = false;
-          errorMsg = "Size mismatch: expected " + String(otaFirmwareSize) + " got " + String(otaReceivedSize);
-          Serial.printf("OTA: Verification failed - size mismatch: expected %d, got %d\n", otaFirmwareSize, otaReceivedSize);
-        }
-
-        BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-        BLECharacteristic *statusChar = nullptr;
-        if (otaService)
-        {
-          statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-        }
-
-        if (verificationPassed)
-        {
-          // All verification checks passed
-          if (statusChar)
-          {
-            statusChar->setValue("SUCCESS");
-            statusChar->notify();
-            Serial.println("OTA: All verification checks passed. Update successful, scheduling restart...");
-          }
-
-          // Schedule restart for later instead of doing it immediately
-          pendingRestart = true;
-          restartTime = millis() + 3000; // Restart in 3 seconds
-        }
-        else
-        {
-          // Verification failed - don't restart
-          if (statusChar)
-          {
-            String fullError = "ERROR:VERIFY_FAILED:" + errorMsg;
-            statusChar->setValue(fullError.c_str());
-            statusChar->notify();
-            Serial.printf("OTA: Verification failed - %s\n", errorMsg.c_str());
-          }
-          // Reset OTA state but don't restart with corrupted firmware
-          Update.abort();
-        }
-      }
-      else
-      {
-        // Update.end() itself failed
-        BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-        if (otaService)
-        {
-          BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-          if (statusChar)
-          {
-            String errorDetails = "ERROR:OTA_END:" + String(Update.errorString());
-            statusChar->setValue(errorDetails.c_str());
-            statusChar->notify();
-            Serial.printf("OTA: Failed to end update - %s\n", Update.errorString());
-          }
-        }
-      }
-      otaInProgress = false;
-    }
-  }
-};
-
-class OTADataCallbacks : public BLECharacteristicCallbacks
-{
-  void onWrite(BLECharacteristic *chr) override
-  {
-    if (!otaInProgress)
-      return;
-
-    // Feed watchdog to prevent timeout during flash operations
-    esp_task_wdt_reset();
-
-    // Monitor memory before processing chunk
-    size_t freeHeap = ESP.getFreeHeap();
-    size_t minFreeHeap = ESP.getMinFreeHeap();
-
-    std::string chunk = chr->getValue();
-    size_t chunkSize = chunk.size();
-
-    // Reduced logging frequency to avoid serial bottlenecks
-    if (otaReceivedSize % (10 * 1024) == 0)
-    { // Log every 10KB instead of every chunk
-      Serial.printf("OTA: Progress %d/%d bytes, heap: %d\n", otaReceivedSize, otaFirmwareSize, freeHeap);
-    }
-
-    // Check if we have enough memory to continue safely
-    if (freeHeap < 4096)
-    { // Less than 4KB free
-      Serial.printf("OTA: Low memory warning - heap: %d bytes\n", freeHeap);
-      BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-      if (otaService)
-      {
-        BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-        if (statusChar)
-        {
-          statusChar->setValue("ERROR:LOW_MEMORY");
-          statusChar->notify();
-        }
-      }
-      otaInProgress = false;
-      return;
-    }
-
-    // Check if chunk is too large
-    if (chunkSize > OTA_CHUNK_SIZE)
-    {
-      Serial.printf("OTA: Chunk too large (%d bytes), max is %d\n", chunkSize, OTA_CHUNK_SIZE);
-      BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-      if (otaService)
-      {
-        BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-        if (statusChar)
-        {
-          statusChar->setValue("ERROR:CHUNK_TOO_LARGE");
-          statusChar->notify();
-        }
-      }
-      otaInProgress = false;
-      return;
-    }
-
-    // Check if this chunk would exceed expected firmware size
-    if (otaReceivedSize + chunkSize > otaFirmwareSize)
-    {
-      Serial.printf("OTA: Chunk would exceed firmware size (%d + %d > %d)\n",
-                    otaReceivedSize, chunkSize, otaFirmwareSize);
-      BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-      if (otaService)
-      {
-        BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-        if (statusChar)
-        {
-          statusChar->setValue("ERROR:SIZE_EXCEEDED");
-          statusChar->notify();
-        }
-      }
-      otaInProgress = false;
-      return;
-    }
-
-    // Feed watchdog before flash operation
-    esp_task_wdt_reset();
-
-    // Yield to allow other tasks to run before flash operation
-    yield();
-
-    // Write chunk to flash
-    size_t written = Update.write((uint8_t *)chunk.data(), chunkSize);
-
-    // Feed watchdog again after flash operation
-    esp_task_wdt_reset();
-
-    // Additional yield after flash operation to prevent watchdog timeout
-    yield();
-
-    if (written == chunkSize)
-    {
-      otaReceivedSize += chunkSize;
-
-      // No progress calculation needed - Android handles progress locally
-      // This eliminates processing overhead and BLE traffic
-    }
-    else
-    {
-      Serial.printf("OTA: Failed to write chunk - expected %d, wrote %d bytes\n", chunkSize, written);
-      Serial.printf("OTA: Update error: %s\n", Update.errorString());
-
-      BLEService *otaService = pServer->getServiceByUUID(OTA_SERVICE_UUID);
-      if (otaService)
-      {
-        BLECharacteristic *statusChar = otaService->getCharacteristic(OTA_STATUS_CHAR_UUID);
-        if (statusChar)
-        {
-          String errorMsg = "ERROR:OTA_WRITE:" + String(Update.errorString());
-          statusChar->setValue(errorMsg.c_str());
-          statusChar->notify();
-        }
-      }
-
-      // Stop OTA process on write failure
-      otaInProgress = false;
-    }
-
-    // Final yield to allow BLE and other tasks to process
-    yield();
-  }
-};
-
-void sendFirmwareVersion()
-{
-  if (deviceConnected && firmwareVersionCharacteristic)
-  {
-    firmwareVersionCharacteristic->setValue(FIRMWARE_VERSION);
-    firmwareVersionCharacteristic->notify();
-    Serial.println("Firmware version sent: " + String(FIRMWARE_VERSION));
-  }
-  else
-  {
-    Serial.println("Device not connected or firmware version characteristic not available.");
-  }
-}
-
-bool isResetAfterOTA()
-{
-  // Get the reset reason
-  esp_reset_reason_t reset_reason = esp_reset_reason();
-
-  // Check if it's a software reset (which happens after OTA)
-  if (reset_reason == ESP_RST_SW)
-  {
-    // Additional check: verify if running partition is different from boot partition
-    const esp_partition_t *running_partition = esp_ota_get_running_partition();
-    const esp_partition_t *boot_partition = esp_ota_get_boot_partition();
-
-    // If they're different, it means we just completed an OTA update
-    if (running_partition != boot_partition)
-    {
-      Serial.printf("Reset after OTA detected - Running: %s, Boot: %s\n",
-                    running_partition->label, boot_partition->label);
-      return true;
-    }
-  }
-
-  return false;
-}
-
-// Add a timer variable
-static unsigned long wakeUpResetTime = 0;
+#include <esp_sleep.h>
+
+#include "Config.h"
+#include "PiezoSensor.h"
+#include "LEDController.h"
+#include "PowerManager.h"
+#include "OTAManager.h"
+#include "BLEManager.h"
+
+// Global instances
+LEDController ledController;
+PowerManager powerManager(&ledController);
+OTAManager otaManager;
+BLEManager bleManager(&ledController, &powerManager, &otaManager);
+PiezoSensor sensor(PIEZO_SENSOR_PIN, 400);
+
+// Forward declarations
+void onPiezoHit(int piezoValue);
+void onBatteryUpdate(int percentage);
 
 void setup()
 {
-  delay(100);
-  Serial.begin(115200);
-  Serial.println("Start");
-
-  // Check wake-up cause FIRST, before any other initialization
-  esp_sleep_wakeup_cause_t wakeup_cause = esp_sleep_get_wakeup_cause();
-  if (wakeup_cause == ESP_SLEEP_WAKEUP_EXT0)
-  {
-    Serial.println("Woken up from deep sleep");
-
-    // Validate wake-up by checking if button is held for 2 seconds
-    if (!validateWakeUp())
-    {
-      // Button was not held long enough, go back to sleep
-      Serial.println("Wake-up validation failed - returning to deep sleep");
-      goToDeepSleep(true); // Skip LED blink since nothing is initialized yet
-      return;              // This line will never be reached, but good practice
+    delay(100);
+    Serial.begin(115200);
+    Serial.println("Start - Modular Version");
+    
+    // Check wake-up cause FIRST, before any other initialization
+    esp_sleep_wakeup_cause_t wakeup_cause = esp_sleep_get_wakeup_cause();
+    if (wakeup_cause == ESP_SLEEP_WAKEUP_EXT0) {
+        Serial.println("Woken up from deep sleep");
+        
+        // Validate wake-up by checking if button is held for 2 seconds
+        if (!powerManager.validateWakeUp()) {
+            // Button was not held long enough, go back to sleep
+            Serial.println("Wake-up validation failed - returning to deep sleep");
+            powerManager.goToDeepSleep(true); // Skip LED blink since nothing is initialized yet
+            return; // This line will never be reached, but good practice
+        }
+        
+        Serial.println("Wake-up validation successful - continuing normal operation");
+    } else {
+        delay(2000);
+        // For fresh boots, add extra stabilization time
+        delay(3000); // Additional delay for power supply to stabilize
     }
-
-    Serial.println("Wake-up validation successful - continuing normal operation");
-  }
-  else
-  {
-    delay(2000);
-    // For fresh boots, add extra stabilization time
-    delay(3000); // Additional delay for power supply to stabilize
-  }
-
-  // Initialize GPIO first (low power)
-  pinMode(ledPowerEnable, OUTPUT);
-  digitalWrite(ledPowerEnable, HIGH);
-  pinMode(ledBlue, OUTPUT);
-  digitalWrite(ledBlue, LOW);
-  pinMode(ledGreen, OUTPUT);
-  digitalWrite(ledGreen, HIGH);
-  pinMode(ledRed, OUTPUT);
-  digitalWrite(ledRed, LOW);
-  pinMode(wakeUpButton, INPUT_PULLUP);
-  gpio_set_pull_mode(GPIO_NUM_15, GPIO_PULLUP_ONLY);
-  gpio_set_direction(GPIO_NUM_15, GPIO_MODE_INPUT);
-  pinMode(batteryPin, INPUT);
-  pinMode(chargingPin, INPUT_PULLUP);
-
-  // Wait before initializing power-hungry components
-  if (wakeup_cause == !ESP_SLEEP_WAKEUP_EXT0){
-    delay(1000);
-  }
-
-  // Initialize sensor (moderate power)
-  sensor.begin();
-  sensor.setCallback(ledOff);
-  
-  if (wakeup_cause == !ESP_SLEEP_WAKEUP_EXT0){
-    digitalWrite(ledGreen, LOW);
-    delay(1000);
-  }
-
-  // Initialize BLE (high power)
-  String deviceName = bleServerName;
-  Serial.print(bleServerName);
-  BLEDevice::init(deviceName.c_str());
-  
-  // Create the BLE Server
-  pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
-
-  // Create the BLE Service and Characteristics
-  piezoService = pServer->createService(SERVICE_UUID);
-  piezoCharacteristic = piezoService->createCharacteristic(
-      CHARACTERISTIC,
-      BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_WRITE);
-
-  batteryCharacteristic = piezoService->createCharacteristic(
-      BATTERY_CHARACTERISTIC,
-      BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
-
-  // Create and add the firmware version characteristic BEFORE starting service
-  firmwareVersionCharacteristic = piezoService->createCharacteristic(
-      FIRMWARE_VERSION_CHARACTERISTIC,
-      BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
-
-  // Add Descriptor and Callbacks
-  piezoCharacteristic->addDescriptor(new BLE2902());
-  batteryCharacteristic->addDescriptor(new BLE2902());
-  firmwareVersionCharacteristic->addDescriptor(new BLE2902());
-  piezoCharacteristic->setCallbacks(new WriteCallbacks());
-  firmwareVersionCharacteristic->setValue(FIRMWARE_VERSION);
-
-  // Start the service ONCE with all characteristics
-  piezoService->start();
-
-  // Configure the advertising data
-  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(piezoService->getUUID());
-  pAdvertising->addServiceUUID(OTA_SERVICE_UUID);
-  pAdvertising->setScanResponse(true);
-
-  // Explicitly set the device name in the advertising data
-  BLEAdvertisementData advertisementData;
-  advertisementData.setName(deviceName.c_str());
-  pAdvertising->setAdvertisementData(advertisementData);
-
-  // Start advertising
-  BLEDevice::startAdvertising();
-
-  Serial.println("Waiting for a client connection to notify...");
-
-  // Initialize disconnect timer to start auto-sleep countdown from boot
-  lastDisconnectTime = millis();
-
-  // Create battery monitoring task
-  xTaskCreatePinnedToCore(
-      batteryMonitorTask, // Task function
-      "BatteryMonitor",   // Task name
-      2048,               // Stack size
-      NULL,               // Task parameters
-      2,                  // Task priority
-      &batteryTaskHandle, // Task handle
-      APP_CPU_NUM         // Run on Core 1
-  );
-
-  // After ESP32 wakes up from deep sleep
-  // The wake-up check is now at the beginning of setup()
-
-  // In setup(), add this after creating the battery monitoring task
-  xTaskCreatePinnedToCore(
-      ledStatusTask,        // Task function
-      "LEDStatus",          // Task name
-      2048,                 // Stack size
-      NULL,                 // Task parameters
-      1,                    // Task priority
-      &ledStatusTaskHandle, // Task handle
-      APP_CPU_NUM           // Run on Core 1
-  );
-
-  // Configure PWM for LEDs
-  ledcSetup(PWM_CHANNEL_RED, PWM_FREQUENCY, PWM_RESOLUTION);
-  ledcSetup(PWM_CHANNEL_GREEN, PWM_FREQUENCY, PWM_RESOLUTION);
-  ledcSetup(PWM_CHANNEL_BLUE, PWM_FREQUENCY, PWM_RESOLUTION);
-
-  // Attach PWM channels to GPIO pins
-  ledcAttachPin(ledRed, PWM_CHANNEL_RED);
-  ledcAttachPin(ledGreen, PWM_CHANNEL_GREEN);
-  ledcAttachPin(ledBlue, PWM_CHANNEL_BLUE);
-
-  // OTA service
-  BLEService *otaService = pServer->createService(OTA_SERVICE_UUID);
-  BLECharacteristic *otaCommandChar = otaService->createCharacteristic(
-      OTA_COMMAND_CHAR_UUID,
-      BLECharacteristic::PROPERTY_WRITE);
-  BLECharacteristic *otaDataChar = otaService->createCharacteristic(
-      OTA_DATA_CHAR_UUID,
-      BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
-  BLECharacteristic *otaStatusChar = otaService->createCharacteristic(
-      OTA_STATUS_CHAR_UUID,
-      BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
-  otaCommandChar->setCallbacks(new OTACommandCallbacks());
-  otaDataChar->setCallbacks(new OTADataCallbacks());
-  otaStatusChar->addDescriptor(new BLE2902());
-  otaService->start();
-
-  // Create the initial device info task
-  xTaskCreatePinnedToCore(
-      initialDeviceInfoTask, // Task function
-      "InitDeviceInfo",      // Task name
-      2048,                  // Stack size
-      NULL,                  // Task parameters
-      1,                     // Task priority
-      NULL,                  // Task handle (will be created by initialBatteryTask)
-      APP_CPU_NUM            // Run on Core 1
-  );
+    
+    // Initialize LED controller first (needed by other modules)
+    if (!ledController.begin()) {
+        Serial.println("Failed to initialize LED controller");
+        return;
+    }
+    
+    // Show initialization progress with LEDs
+    if (wakeup_cause != ESP_SLEEP_WAKEUP_EXT0) {
+        ledController.setRgbColor(0, 255, 0); // Green for initialization
+    }
+    
+    // Initialize power manager
+    if (!powerManager.begin()) {
+        Serial.println("Failed to initialize power manager");
+        return;
+    }
+    
+    // Set battery callback
+    powerManager.setBatteryCallback(onBatteryUpdate);
+    
+    // Wait before initializing power-hungry components
+    if (wakeup_cause != ESP_SLEEP_WAKEUP_EXT0) {
+        delay(1000);
+        ledController.turnOff();
+        delay(1000);
+    }
+    
+    // Initialize sensor
+    sensor.begin();
+    sensor.setCallback(onPiezoHit);
+    
+    // Initialize BLE manager
+    if (!bleManager.begin()) {
+        Serial.println("Failed to initialize BLE manager");
+        return;
+    }
+    
+    // Start power manager tasks
+    powerManager.startBatteryMonitoringTask();
+    
+    // Start LED status task
+    bleManager.startLedStatusTask();
+    
+    Serial.println("All modules initialized successfully");
+    
+    // Check if this is a reset after OTA
+    if (otaManager.isResetAfterOTA()) {
+        Serial.println("System restarted after OTA update");
+    }
 }
 
 void loop()
 {
-  static unsigned long pressStartTime = 0;
-  static bool buttonPressed = false;
-
-  // Check for pending restart
-  if (pendingRestart && millis() >= restartTime)
-  {
-    Serial.println("OTA: Executing scheduled restart...");
-    Serial.flush();
-    ESP.restart();
-  }
-
-  // Button handling
-  if (digitalRead(wakeUpButton) == LOW)
-  { // Button is pressed
-    if (!buttonPressed)
-    { // Button was just pressed
-      pressStartTime = millis();
-      buttonPressed = true;
-      Serial.println("Button pressed");
-
-      // RESET justWokenUp flag immediately when button is pressed
-      if (justWokenUp)
-      {
-        justWokenUp = false;
-        Serial.println("Reset justWokenUp flag");
-      }
+    static unsigned long pressStartTime = 0;
+    static bool buttonPressed = false;
+    
+    // Check for pending OTA restart
+    otaManager.checkPendingRestart();
+    
+    // Button handling for power off
+    if (powerManager.isButtonPressed()) {
+        if (!buttonPressed) {
+            // Button was just pressed
+            pressStartTime = millis();
+            buttonPressed = true;
+            Serial.println("Button pressed");
+            
+            // Reset justWokenUp flag immediately when button is pressed
+            if (powerManager.isJustWokenUp()) {
+                powerManager.clearWakeUpFlag();
+                Serial.println("Reset justWokenUp flag");
+            }
+        }
+        
+        // Check for long press while button is still held
+        if ((millis() - pressStartTime) > TURN_OFF_TIME) {
+            Serial.println("TURN OFF TIME DETECTED");
+            powerManager.goToDeepSleep();
+        }
+    } else if (buttonPressed) {
+        buttonPressed = false;
     }
+}
 
-    // Check for long press while button is still held
-    if ((millis() - pressStartTime) > TURN_OFF_TIME)
-    {
-      Serial.println("TURN OFF TIME DETECTED");
-      goToDeepSleep();
-    }
-  }
-  else if (buttonPressed)
-  {
-    buttonPressed = false;
-    // Remove this line: justWokenUp = false; // Don't reset here anymore
-  }
+// Callback functions
+void onPiezoHit(int piezoValue)
+{
+    ledController.turnOff();
+    bleManager.sendPiezoValue(piezoValue);
+}
+
+void onBatteryUpdate(int percentage)
+{
+    bleManager.sendBatteryLevel(percentage);
 }
