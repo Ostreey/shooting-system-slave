@@ -82,7 +82,7 @@ void BLEManager::onPiezoHit()
     hitTime = millis();
     if (ledController)
     {
-        ledController->setLeds(true);
+        ledController->setRgbColor(255, 0, 0); // Red for active target
     }
 }
 
