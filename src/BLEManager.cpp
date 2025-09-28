@@ -80,10 +80,6 @@ bool BLEManager::begin()
 void BLEManager::onPiezoHit()
 {
     hitTime = millis();
-    if (ledController)
-    {
-        ledController->setRgbColor(255, 0, 0); // Red for active target
-    }
 }
 
 void BLEManager::sendPiezoValue(int piezoValue)
@@ -187,6 +183,11 @@ BLECommandData BLEManager::parseCommand(const std::string &value)
     // Handle valueless commands
     if (value == "start")
         result.command = BLECommand::START;
+    else if (value.substr(0, 6) == "start:")
+    {
+        result.command = BLECommand::START;
+        result.value = 0; // We'll parse color in the handler
+    }
     else if (value == "sleep")
         result.command = BLECommand::SLEEP;
     else if (value == "game1")
@@ -200,24 +201,34 @@ BLECommandData BLEManager::parseCommand(const std::string &value)
     return result;
 }
 
-void BLEManager::handleRGBCommand(const std::string &value)
+bool BLEManager::parseRgbValues(const std::string &rgbStr, int &red, int &green, int &blue)
 {
-    // Parse RGB values from "rgb:r,g,b" format
-    std::string rgbStr = value.substr(4); // Remove "rgb:" prefix
     size_t firstComma = rgbStr.find(',');
     size_t secondComma = rgbStr.find(',', firstComma + 1);
 
     if (firstComma != std::string::npos && secondComma != std::string::npos)
     {
-        int red = std::stoi(rgbStr.substr(0, firstComma));
-        int green = std::stoi(rgbStr.substr(firstComma + 1, secondComma - firstComma - 1));
-        int blue = std::stoi(rgbStr.substr(secondComma + 1));
+        red = std::stoi(rgbStr.substr(0, firstComma));
+        green = std::stoi(rgbStr.substr(firstComma + 1, secondComma - firstComma - 1));
+        blue = std::stoi(rgbStr.substr(secondComma + 1));
 
         // Constrain values to 0-255 range
         red = constrain(red, 0, 255);
         green = constrain(green, 0, 255);
         blue = constrain(blue, 0, 255);
+        return true;
+    }
+    return false;
+}
 
+void BLEManager::handleRGBCommand(const std::string &value)
+{
+    // Parse RGB values from "rgb:r,g,b" format
+    std::string rgbStr = value.substr(4); // Remove "rgb:" prefix
+    int red, green, blue;
+
+    if (parseRgbValues(rgbStr, red, green, blue))
+    {
         if (ledController)
         {
             ledController->setRgbColor(red, green, blue);
@@ -256,20 +267,10 @@ void BLEManager::handleBlinkColorCommand(const std::string &value)
 {
     // Parse RGB values from "blinkrgb:r,g,b" format
     std::string rgbStr = value.substr(9); // Remove "blinkrgb:" prefix
-    size_t firstComma = rgbStr.find(',');
-    size_t secondComma = rgbStr.find(',', firstComma + 1);
+    int red, green, blue;
 
-    if (firstComma != std::string::npos && secondComma != std::string::npos)
+    if (parseRgbValues(rgbStr, red, green, blue))
     {
-        int red = std::stoi(rgbStr.substr(0, firstComma));
-        int green = std::stoi(rgbStr.substr(firstComma + 1, secondComma - firstComma - 1));
-        int blue = std::stoi(rgbStr.substr(secondComma + 1));
-
-        // Constrain values to 0-255 range
-        red = constrain(red, 0, 255);
-        green = constrain(green, 0, 255);
-        blue = constrain(blue, 0, 255);
-
         if (ledController)
         {
             ledController->blinkColor(red, green, blue);
@@ -278,6 +279,25 @@ void BLEManager::handleBlinkColorCommand(const std::string &value)
     else
     {
         Serial.println("Invalid blink color format. Use: blinkrgb:r,g,b");
+    }
+}
+
+void BLEManager::handleStartColorCommand(const std::string &value)
+{
+    // Parse RGB values from "start:r,g,b" format
+    std::string rgbStr = value.substr(6); // Remove "start:" prefix
+    int red, green, blue;
+
+    if (parseRgbValues(rgbStr, red, green, blue))
+    {
+        if (ledController)
+        {
+            ledController->setRgbColor(red, green, blue);
+        }
+    }
+    else
+    {
+        Serial.println("Invalid start color format. Use: start:r,g,b");
     }
 }
 
@@ -354,6 +374,11 @@ void BLEManager::WriteCallbacks::onWrite(BLECharacteristic *pCharacteristic)
     {
     case BLECommand::START:
         bleManager->onPiezoHit();
+        // If command has color info, set the color
+        if (value.substr(0, 6) == "start:")
+        {
+            bleManager->handleStartColorCommand(value);
+        }
         break;
 
     case BLECommand::SLEEP:

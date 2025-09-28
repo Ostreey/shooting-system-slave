@@ -104,6 +104,10 @@ private:
     void handleRGBCommand(const std::string &value);
     void handleColorCommand(const std::string &value);
     void handleBlinkColorCommand(const std::string &value);
+    void handleStartColorCommand(const std::string &value);
+
+    // Common RGB parsing helper
+    bool parseRgbValues(const std::string &rgbStr, int &red, int &green, int &blue);
 };
 
 #endif // BLE_MANAGER_H
