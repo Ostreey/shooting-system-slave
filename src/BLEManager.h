@@ -12,11 +12,11 @@ class LEDController;
 class PowerManager;
 class OTAManager;
 
-enum class BLECommand {
+enum class BLECommand
+{
     UNKNOWN,
     START,
     SLEEP,
-    BLINK,
     GAME1,
     SET_BRIGHTNESS,
     SET_RGB_COLOR,
@@ -24,79 +24,86 @@ enum class BLECommand {
     SET_RED,
     SET_GREEN,
     SET_BLUE,
+    BLINK_COLOR,
 };
 
-struct BLECommandData {
+struct BLECommandData
+{
     BLECommand command;
     int value;
 };
 
-class BLEManager 
+class BLEManager
 {
 private:
-    LEDController* ledController;
-    PowerManager* powerManager;
-    OTAManager* otaManager;
-    
-    BLEServer* pServer;
-    BLEService* piezoService;
-    BLECharacteristic* piezoCharacteristic;
-    BLECharacteristic* batteryCharacteristic;
-    BLECharacteristic* firmwareVersionCharacteristic;
-    
+    LEDController *ledController;
+    PowerManager *powerManager;
+    OTAManager *otaManager;
+
+    BLEServer *pServer;
+    BLEService *piezoService;
+    BLECharacteristic *piezoCharacteristic;
+    BLECharacteristic *batteryCharacteristic;
+    BLECharacteristic *firmwareVersionCharacteristic;
+
     bool deviceConnected;
     bool isInitialized;
     unsigned long hitTime;
-    
+
 public:
-    BLEManager(LEDController* leds, PowerManager* power, OTAManager* ota);
-    
+    BLEManager(LEDController *leds, PowerManager *power, OTAManager *ota);
+
     // Initialization
     bool begin();
-    
+
     // Connection state
     bool isConnected() const { return deviceConnected; }
-    
+
     // Data sending
     void sendPiezoValue(int piezoValue);
     void sendBatteryLevel(int percentage);
     void sendFirmwareVersion();
-    
+
     // Hit detection
     void onPiezoHit();
-    
+
     // Command parsing
-    static BLECommandData parseCommand(const std::string& value);
-    
+    static BLECommandData parseCommand(const std::string &value);
+
     // Task functions
-    static void initialDeviceInfoTask(void* pvParameters);
-    static void ledStatusTask(void* pvParameters);
+    static void initialDeviceInfoTask(void *pvParameters);
+    static void ledStatusTask(void *pvParameters);
     void startLedStatusTask();
-    
+
     // Callback classes
-    class WriteCallbacks : public BLECharacteristicCallbacks {
+    class WriteCallbacks : public BLECharacteristicCallbacks
+    {
     private:
-        BLEManager* bleManager;
+        BLEManager *bleManager;
+
     public:
-        WriteCallbacks(BLEManager* manager) : bleManager(manager) {}
-        void onWrite(BLECharacteristic* pCharacteristic) override;
+        WriteCallbacks(BLEManager *manager) : bleManager(manager) {}
+        void onWrite(BLECharacteristic *pCharacteristic) override;
     };
-    
-    class ServerCallbacks : public BLEServerCallbacks {
+
+    class ServerCallbacks : public BLEServerCallbacks
+    {
     private:
-        BLEManager* bleManager;
+        BLEManager *bleManager;
+
     public:
-        ServerCallbacks(BLEManager* manager) : bleManager(manager) {}
-        void onConnect(BLEServer* pServer) override;
-        void onDisconnect(BLEServer* pServer) override;
+        ServerCallbacks(BLEManager *manager) : bleManager(manager) {}
+        void onConnect(BLEServer *pServer) override;
+        void onDisconnect(BLEServer *pServer) override;
     };
-    
+
 private:
     TaskHandle_t ledStatusTaskHandle;
-    
+
     // Helper methods for command processing
-    void handleRGBCommand(const std::string& value);
-    void handleColorCommand(const std::string& value);
+    void handleRGBCommand(const std::string &value);
+    void handleColorCommand(const std::string &value);
+    void handleBlinkColorCommand(const std::string &value);
 };
 
 #endif // BLE_MANAGER_H
