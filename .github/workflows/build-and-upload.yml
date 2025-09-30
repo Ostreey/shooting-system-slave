@@ -36,7 +36,7 @@ jobs:
     - name: Extract version from source
       id: version
       run: |
-        VERSION=$(grep -o 'const char \*FIRMWARE_VERSION = "[^"]*"' src/main.cpp | cut -d'"' -f2)
+        VERSION=$(grep -o 'const char \*FIRMWARE_VERSION = "[^"]*"' src/Config.ch | cut -d'"' -f2)
         echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "Firmware version: $VERSION"
         
