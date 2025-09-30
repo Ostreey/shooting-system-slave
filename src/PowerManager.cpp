@@ -222,6 +222,8 @@ void PowerManager::batteryMonitorTaskFunction(void *pvParameters)
             powerManager->goToDeepSleep(true);
         }
 
+        // Check for low battery (5% threshold for normal operation)
+        // Note: BLE operation requires higher voltage (10% threshold checked in main.cpp)
         if (percentage < BATTERY_LOW_THRESHOLD)
         {
             Serial.println("Battery low, going to sleep");

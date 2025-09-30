@@ -2,7 +2,7 @@
 #define CONFIG_H
 
 // Firmware version
-#define FIRMWARE_VERSION "1.0.2"
+#define FIRMWARE_VERSION "1.0.3"
 
 // BLE Configuration
 #define BLE_SERVER_NAME "SHOOTING TARGET"
@@ -40,8 +40,8 @@
 #define PIEZO_SENSOR_PIN 32
 
 // Timing Constants
-#define TURN_OFF_TIME 2000          // 2 seconds for long press
-#define WAKE_UP_HOLD_TIME 2000      // 2 seconds required to confirm wake up
+#define TURN_OFF_TIME 2000              // 2 seconds for long press
+#define WAKE_UP_HOLD_TIME 2000          // 2 seconds required to confirm wake up
 #define AUTO_SLEEP_TIME (5 * 60 * 1000) // 5 minutes in milliseconds
 
 // OTA Configuration
@@ -49,7 +49,7 @@
 
 // Battery thresholds
 #define BATTERY_LOW_THRESHOLD 5
-#define BATTERY_MIN_VOLTAGE 340  // 3.4V * 100
-#define BATTERY_MAX_VOLTAGE 420  // 4.2V * 100
+#define BATTERY_MIN_VOLTAGE 340 // 3.4V * 100
+#define BATTERY_MAX_VOLTAGE 420 // 4.2V * 100
 
 #endif // CONFIG_H

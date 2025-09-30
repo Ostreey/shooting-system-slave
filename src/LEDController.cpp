@@ -22,7 +22,7 @@ bool LEDController::begin()
 
     // Initialize LEDs to off
     digitalWrite(LED_BLUE_PIN, LOW);
-    digitalWrite(LED_GREEN_PIN, HIGH);
+    digitalWrite(LED_GREEN_PIN, LOW);
     digitalWrite(LED_RED_PIN, LOW);
 
     // Configure PWM for LEDs
@@ -35,7 +35,6 @@ bool LEDController::begin()
     ledcAttachPin(LED_GREEN_PIN, PWM_CHANNEL_GREEN);
     ledcAttachPin(LED_BLUE_PIN, PWM_CHANNEL_BLUE);
     isInitialized = true;
-    setRgbColor(0, 255, 0);
     return true;
 }
 
