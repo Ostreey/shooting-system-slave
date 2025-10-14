@@ -1,11 +1,11 @@
-name: Build and Upload Firmware
+name: Build and Release Firmware
 
 on:
   push:
     branches: [ main ]
 
 jobs:
-  build-and-upload:
+  build-and-release:
     runs-on: ubuntu-latest
     
     steps:
@@ -57,8 +57,28 @@ jobs:
         }
         EOF
         
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v4
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
       with:
-        name: firmware-${{ steps.version.outputs.version }}
-        path: build-output/ 
+        tag_name: v${{ steps.version.outputs.version }}
+        name: Firmware v${{ steps.version.outputs.version }}
+        body: |
+          ## Firmware Release v${{ steps.version.outputs.version }}
+          
+          **Build Date:** $(date -u +%Y-%m-%d)
+          **Commit:** ${{ github.sha }}
+          
+          ### Files:
+          - `firmware.bin` - Main firmware file
+          - `metadata.json` - Build information
+          
+          ### Installation:
+          1. Download the firmware.bin file
+          2. Use your Shooting Buddy app to update the device
+        files: |
+          build-output/firmware.bin
+          build-output/metadata.json
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
