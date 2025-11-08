@@ -1,0 +1,8 @@
+{
+    "idf.openOcdConfigs": [
+        "board/esp32s3-builtin.cfg"
+    ],
+    "files.associations": {
+        "new": "cpp"
+    }
+}

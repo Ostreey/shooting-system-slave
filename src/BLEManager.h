@@ -6,6 +6,7 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <BLEAdvertising.h>
 #include "Config.h"
 
 class LEDController;
@@ -25,6 +26,8 @@ enum class BLECommand
     SET_GREEN,
     SET_BLUE,
     BLINK_COLOR,
+    BLE_STATUS,
+    BLE_PHY_INFO,
 };
 
 struct BLECommandData
@@ -45,6 +48,10 @@ private:
     BLECharacteristic *piezoCharacteristic;
     BLECharacteristic *batteryCharacteristic;
     BLECharacteristic *firmwareVersionCharacteristic;
+
+#ifdef CONFIG_BT_BLE_50_FEATURES_SUPPORTED
+    BLEMultiAdvertising *pMultiAdvertising;
+#endif
 
     bool deviceConnected;
     bool isInitialized;
@@ -74,6 +81,11 @@ public:
     static void initialDeviceInfoTask(void *pvParameters);
     static void ledStatusTask(void *pvParameters);
     void startLedStatusTask();
+
+    // BLE monitoring and diagnostics
+    void logBLEConnectionInfo();
+    void logBLEPHYInfo();
+    void registerBLEEventCallback();
 
     // Callback classes
     class WriteCallbacks : public BLECharacteristicCallbacks

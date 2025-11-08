@@ -81,14 +81,14 @@ void setup()
         delay(1000);
     }
 
-    if (batteryPercentage < BATTERY_LOW_THRESHOLD)
-    {
-        Serial.println("Battery too low for BLE operation, going to sleep immediately");
-        powerManager.goToDeepSleep(true); // Skip LED blink to save power
-        return;                           // This line will never be reached, but good practice
-    }   
-    // Set battery callback
-    powerManager.setBatteryCallback(onBatteryUpdate);
+    // if (batteryPercentage < BATTERY_LOW_THRESHOLD)
+    // {
+    //     Serial.println("Battery too low for BLE operation, going to sleep immediately");
+    //     powerManager.goToDeepSleep(true); // Skip LED blink to save power
+    //     return;                           // This line will never be reached, but good practice
+    // }   
+    // // Set battery callback
+    // powerManager.setBatteryCallback(onBatteryUpdate);
 
     // Wait before initializing power-hungry components
     if (wakeup_cause != ESP_SLEEP_WAKEUP_EXT0)
@@ -109,7 +109,7 @@ void setup()
     }
 
     // Start power manager tasks
-    powerManager.startBatteryMonitoringTask();
+    //powerManager.startBatteryMonitoringTask();
 
     // Start LED status task
     bleManager.startLedStatusTask();
@@ -132,34 +132,34 @@ void loop()
     otaManager.checkPendingRestart();
 
     // Button handling for power off
-    if (powerManager.isButtonPressed())
-    {
-        if (!buttonPressed)
-        {
-            // Button was just pressed
-            pressStartTime = millis();
-            buttonPressed = true;
-            Serial.println("Button pressed");
+    // if (powerManager.isButtonPressed())
+    // {
+    //     if (!buttonPressed)
+    //     {
+    //         // Button was just pressed
+    //         pressStartTime = millis();
+    //         buttonPressed = true;
+    //         Serial.println("Button pressed");
 
-            // Reset justWokenUp flag immediately when button is pressed
-            if (powerManager.isJustWokenUp())
-            {
-                powerManager.clearWakeUpFlag();
-                Serial.println("Reset justWokenUp flag");
-            }
-        }
+    //         // Reset justWokenUp flag immediately when button is pressed
+    //         if (powerManager.isJustWokenUp())
+    //         {
+    //             powerManager.clearWakeUpFlag();
+    //             Serial.println("Reset justWokenUp flag");
+    //         }
+    //     }
 
-        // Check for long press while button is still held
-        if ((millis() - pressStartTime) > TURN_OFF_TIME)
-        {
-            Serial.println("TURN OFF TIME DETECTED");
-            powerManager.goToDeepSleep();
-        }
-    }
-    else if (buttonPressed)
-    {
-        buttonPressed = false;
-    }
+    //     // Check for long press while button is still held
+    //     if ((millis() - pressStartTime) > TURN_OFF_TIME)
+    //     {
+    //         Serial.println("TURN OFF TIME DETECTED");
+    //         powerManager.goToDeepSleep();
+    //     }
+    // }
+    // else if (buttonPressed)
+    // {
+    //     buttonPressed = false;
+    // }
 }
 
 // Callback functions
