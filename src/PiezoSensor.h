@@ -1,83 +1,77 @@
 #ifndef PIEZOSENSOR_H
 #define PIEZOSENSOR_H
 
-#include <Arduino.h>
+#include <cstdint>
+#include <functional>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <driver/adc.h>
+#include "TimeUtils.h"
 
-
-typedef void (*HitCallback)(int piezoValue);
-
+using HitCallback = std::function<void(int)>;
 
 class PiezoSensor {
   private:
     int pin;
     int threshold;
-    int cnt;
+    int warmupCount;
     HitCallback callback;
     TaskHandle_t taskHandle;
-    unsigned long lastHitTime;      // Track time of last hit
-    const int debounceTime = 200;   // Debounce period in ms
+    uint32_t lastHitTime;
+    static constexpr int debounceTimeMs = 200;
+    static constexpr adc1_channel_t channel = ADC1_CHANNEL_1;
 
- 
     static void sensorTask(void *pvParameters) {
       PiezoSensor *sensor = static_cast<PiezoSensor*>(pvParameters);
       for (;;) {
-        sensor->update(); 
-        vTaskDelay(2 / portTICK_PERIOD_MS);
+        sensor->update();
+        vTaskDelay(pdMS_TO_TICKS(2));
       }
     }
 
   public:
-
-    PiezoSensor(int pin, int threshold) 
-      {
-        this->pin = pin;
-        this->threshold = threshold;
-        cnt = 0;
-        callback = nullptr;
-        taskHandle = NULL;
-        lastHitTime = 0;
-      }
-
+    PiezoSensor(int pin, int threshold)
+        : pin(pin),
+          threshold(threshold),
+          warmupCount(0),
+          callback(nullptr),
+          taskHandle(nullptr),
+          lastHitTime(0) {}
 
     void begin() {
-      for (int i = 0; i < 10; i++) {
-        analogRead(pin);
-        delay(50); 
+      adc1_config_width(ADC_WIDTH_BIT_12);
+      adc1_config_channel_atten(channel, ADC_ATTEN_DB_11);
+      for (int i = 0; i < 10; ++i) {
+        adc1_get_raw(channel);
+        delayMs(50);
       }
-
-     
       xTaskCreatePinnedToCore(
-        sensorTask,          // Task function
-        "Sensor Task",       // Task name
-        10000,               // Stack size
-        this,                // Parameters
-        3,                   // Priority (increased from 1 to 3)
-        &taskHandle,         // Task handle
-        PRO_CPU_NUM          // Run on Core 0
-      );
+          sensorTask,
+          "SensorTask",
+          4096,
+          this,
+          3,
+          &taskHandle,
+          PRO_CPU_NUM);
     }
 
-
-    void setCallback(HitCallback callback) {
-      this->callback = callback;
+    void setCallback(HitCallback cb) {
+      callback = cb;
     }
 
-   
     void update() {
-      int piezoValue = analogRead(pin);
-      unsigned long currentTime = millis();
-    
-      if (cnt > 50) {
-       
-        if (piezoValue > threshold&& (currentTime - lastHitTime > debounceTime)) {
-          Serial.println(piezoValue);
+      int piezoValue = adc1_get_raw(channel);
+      uint32_t currentTime = millis();
+
+      if (warmupCount > 50) {
+        if (piezoValue > threshold && (currentTime - lastHitTime > debounceTimeMs)) {
           if (callback) {
             callback(piezoValue);
           }
-          lastHitTime = currentTime; 
+          lastHitTime = currentTime;
         }
       } else {
-        cnt++;
+        warmupCount++;
       }
     }
 };

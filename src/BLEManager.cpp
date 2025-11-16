@@ -1,20 +1,184 @@
 #include "BLEManager.h"
+
+#include <algorithm>
+#include <array>
+#include <cstring>
+#include <esp_gap_ble_api.h>
+#include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
 #include "LEDController.h"
 #include "PowerManager.h"
 #include "OTAManager.h"
-#include <string.h>
-#include <esp_gap_ble_api.h>
+#include "TimeUtils.h"
+
+namespace
+{
+const char *TAG = "BLEManager";
+constexpr uint8_t ADV_CONFIG_FLAG = 1 << 0;
+
+const uint16_t primaryServiceUuid = ESP_GATT_UUID_PRI_SERVICE;
+const uint16_t charDeclUuid = ESP_GATT_UUID_CHAR_DECLARE;
+const uint16_t clientConfigUuid = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
+
+const uint8_t piezoServiceUuid[16] = {0x92, 0xd4, 0xba, 0x91, 0x50, 0xb9, 0x26, 0x42, 0xaa, 0x2b, 0x4e, 0xde, 0x9f, 0xa4, 0x2f, 0xff};
+const uint8_t piezoCharUuid[16] = {0x66, 0xd4, 0xa1, 0xcb, 0x4c, 0x34, 0xe3, 0x4b, 0xab, 0x3f, 0x18, 0x9f, 0x80, 0xdd, 0x75, 0xff};
+const uint8_t batteryCharUuid[16] = {0x66, 0xd4, 0xa1, 0xcb, 0x4c, 0x34, 0xe3, 0x4b, 0xab, 0x3f, 0x18, 0x9f, 0x80, 0xdd, 0x76, 0xff};
+const uint8_t firmwareCharUuid[16] = {0x66, 0xd4, 0xa1, 0xcb, 0x4c, 0x34, 0xe3, 0x4b, 0xab, 0x3f, 0x18, 0x9f, 0x80, 0xdd, 0x77, 0xff};
+const uint8_t otaServiceUuid[16] = {0x78, 0x56, 0x34, 0x12, 0x34, 0x12, 0x78, 0x56, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0x00, 0x00};
+const uint8_t otaCommandUuid[16] = {0x78, 0x56, 0x34, 0x12, 0x34, 0x12, 0x78, 0x56, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0x00, 0x01};
+const uint8_t otaDataUuid[16] = {0x78, 0x56, 0x34, 0x12, 0x34, 0x12, 0x78, 0x56, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0x00, 0x02};
+const uint8_t otaStatusUuid[16] = {0x78, 0x56, 0x34, 0x12, 0x34, 0x12, 0x78, 0x56, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0x00, 0x03};
+
+enum PiezoAttrIndex
+{
+    PIEZO_IDX_SVC,
+    PIEZO_IDX_CHAR_HIT,
+    PIEZO_IDX_CHAR_VAL_HIT,
+    PIEZO_IDX_CHAR_CFG_HIT,
+    PIEZO_IDX_CHAR_BATT,
+    PIEZO_IDX_CHAR_VAL_BATT,
+    PIEZO_IDX_CHAR_CFG_BATT,
+    PIEZO_IDX_CHAR_FW,
+    PIEZO_IDX_CHAR_VAL_FW,
+    PIEZO_IDX_CHAR_CFG_FW,
+    PIEZO_IDX_NB
+};
+
+enum OtaAttrIndex
+{
+    OTA_IDX_SVC,
+    OTA_IDX_CHAR_CMD,
+    OTA_IDX_CHAR_VAL_CMD,
+    OTA_IDX_CHAR_DATA,
+    OTA_IDX_CHAR_VAL_DATA,
+    OTA_IDX_CHAR_STATUS,
+    OTA_IDX_CHAR_VAL_STATUS,
+    OTA_IDX_CHAR_CFG_STATUS,
+    OTA_IDX_NB
+};
+
+uint8_t piezoCmdValue[20];
+uint8_t piezoCmdCcc[2] = {0x00, 0x00};
+uint8_t batteryValue[8];
+uint8_t batteryCcc[2] = {0x00, 0x00};
+uint8_t firmwareValue[16];
+uint8_t firmwareCcc[2] = {0x00, 0x00};
+uint8_t otaCommandValue[16];
+uint8_t otaDataValue[OTA_CHUNK_SIZE];
+uint8_t otaStatusValue[32];
+uint8_t otaStatusCcc[2] = {0x00, 0x00};
+
+uint8_t hitCharProps = ESP_GATT_CHAR_PROP_BIT_NOTIFY | ESP_GATT_CHAR_PROP_BIT_WRITE;
+uint8_t batteryCharProps = ESP_GATT_CHAR_PROP_BIT_NOTIFY | ESP_GATT_CHAR_PROP_BIT_READ;
+uint8_t firmwareCharProps = ESP_GATT_CHAR_PROP_BIT_NOTIFY | ESP_GATT_CHAR_PROP_BIT_READ;
+uint8_t otaCommandProps = ESP_GATT_CHAR_PROP_BIT_WRITE;
+uint8_t otaDataProps = ESP_GATT_CHAR_PROP_BIT_WRITE | ESP_GATT_CHAR_PROP_BIT_WRITE_NR;
+uint8_t otaStatusProps = ESP_GATT_CHAR_PROP_BIT_NOTIFY | ESP_GATT_CHAR_PROP_BIT_READ;
+
+esp_gatts_attr_db_t piezo_gatt_db[PIEZO_IDX_NB] = {
+    [PIEZO_IDX_SVC] = {{ESP_GATT_AUTO_RSP},
+                       {ESP_UUID_LEN_16, (uint8_t *)&primaryServiceUuid, ESP_GATT_PERM_READ,
+                        sizeof(piezoServiceUuid), sizeof(piezoServiceUuid), (uint8_t *)piezoServiceUuid}},
+    [PIEZO_IDX_CHAR_HIT] = {{ESP_GATT_AUTO_RSP},
+                            {ESP_UUID_LEN_16, (uint8_t *)&charDeclUuid, ESP_GATT_PERM_READ,
+                             sizeof(uint8_t), sizeof(uint8_t), &hitCharProps}},
+    [PIEZO_IDX_CHAR_VAL_HIT] = {{ESP_GATT_AUTO_RSP},
+                                {ESP_UUID_LEN_128, (uint8_t *)piezoCharUuid, ESP_GATT_PERM_WRITE,
+                                 sizeof(piezoCmdValue), sizeof(uint8_t), piezoCmdValue}},
+    [PIEZO_IDX_CHAR_CFG_HIT] = {{ESP_GATT_AUTO_RSP},
+                                {ESP_UUID_LEN_16, (uint8_t *)&clientConfigUuid, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+                                 sizeof(uint16_t), sizeof(piezoCmdCcc), piezoCmdCcc}},
+    [PIEZO_IDX_CHAR_BATT] = {{ESP_GATT_AUTO_RSP},
+                             {ESP_UUID_LEN_16, (uint8_t *)&charDeclUuid, ESP_GATT_PERM_READ,
+                              sizeof(uint8_t), sizeof(uint8_t), &batteryCharProps}},
+    [PIEZO_IDX_CHAR_VAL_BATT] = {{ESP_GATT_AUTO_RSP},
+                                 {ESP_UUID_LEN_128, (uint8_t *)batteryCharUuid, ESP_GATT_PERM_READ,
+                                  sizeof(batteryValue), sizeof(uint8_t), batteryValue}},
+    [PIEZO_IDX_CHAR_CFG_BATT] = {{ESP_GATT_AUTO_RSP},
+                                 {ESP_UUID_LEN_16, (uint8_t *)&clientConfigUuid, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+                                  sizeof(uint16_t), sizeof(batteryCcc), batteryCcc}},
+    [PIEZO_IDX_CHAR_FW] = {{ESP_GATT_AUTO_RSP},
+                           {ESP_UUID_LEN_16, (uint8_t *)&charDeclUuid, ESP_GATT_PERM_READ,
+                            sizeof(uint8_t), sizeof(uint8_t), &firmwareCharProps}},
+    [PIEZO_IDX_CHAR_VAL_FW] = {{ESP_GATT_AUTO_RSP},
+                               {ESP_UUID_LEN_128, (uint8_t *)firmwareCharUuid, ESP_GATT_PERM_READ,
+                                sizeof(firmwareValue), sizeof(uint8_t), firmwareValue}},
+    [PIEZO_IDX_CHAR_CFG_FW] = {{ESP_GATT_AUTO_RSP},
+                               {ESP_UUID_LEN_16, (uint8_t *)&clientConfigUuid, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+                                sizeof(uint16_t), sizeof(firmwareCcc), firmwareCcc}},
+};
+
+esp_gatts_attr_db_t ota_gatt_db[OTA_IDX_NB] = {
+    [OTA_IDX_SVC] = {{ESP_GATT_AUTO_RSP},
+                     {ESP_UUID_LEN_16, (uint8_t *)&primaryServiceUuid, ESP_GATT_PERM_READ,
+                      sizeof(otaServiceUuid), sizeof(otaServiceUuid), (uint8_t *)otaServiceUuid}},
+    [OTA_IDX_CHAR_CMD] = {{ESP_GATT_AUTO_RSP},
+                          {ESP_UUID_LEN_16, (uint8_t *)&charDeclUuid, ESP_GATT_PERM_READ,
+                           sizeof(uint8_t), sizeof(uint8_t), &otaCommandProps}},
+    [OTA_IDX_CHAR_VAL_CMD] = {{ESP_GATT_AUTO_RSP},
+                              {ESP_UUID_LEN_128, (uint8_t *)otaCommandUuid, ESP_GATT_PERM_WRITE,
+                               sizeof(otaCommandValue), sizeof(uint8_t), otaCommandValue}},
+    [OTA_IDX_CHAR_DATA] = {{ESP_GATT_AUTO_RSP},
+                           {ESP_UUID_LEN_16, (uint8_t *)&charDeclUuid, ESP_GATT_PERM_READ,
+                            sizeof(uint8_t), sizeof(uint8_t), &otaDataProps}},
+    [OTA_IDX_CHAR_VAL_DATA] = {{ESP_GATT_AUTO_RSP},
+                               {ESP_UUID_LEN_128, (uint8_t *)otaDataUuid, ESP_GATT_PERM_WRITE,
+                                sizeof(otaDataValue), sizeof(uint8_t), otaDataValue}},
+    [OTA_IDX_CHAR_STATUS] = {{ESP_GATT_AUTO_RSP},
+                             {ESP_UUID_LEN_16, (uint8_t *)&charDeclUuid, ESP_GATT_PERM_READ,
+                              sizeof(uint8_t), sizeof(uint8_t), &otaStatusProps}},
+    [OTA_IDX_CHAR_VAL_STATUS] = {{ESP_GATT_AUTO_RSP},
+                                 {ESP_UUID_LEN_128, (uint8_t *)otaStatusUuid, ESP_GATT_PERM_READ,
+                                  sizeof(otaStatusValue), sizeof(uint8_t), otaStatusValue}},
+    [OTA_IDX_CHAR_CFG_STATUS] = {{ESP_GATT_AUTO_RSP},
+                                 {ESP_UUID_LEN_16, (uint8_t *)&clientConfigUuid, ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+                                  sizeof(uint16_t), sizeof(otaStatusCcc), otaStatusCcc}},
+};
+
+esp_ble_adv_params_t advParams = {
+    .adv_int_min = 0x20,
+    .adv_int_max = 0x40,
+    .adv_type = ADV_TYPE_IND,
+    .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
+    .channel_map = ADV_CHNL_ALL,
+    .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
+};
+
+esp_ble_adv_data_t advData = {
+    .set_scan_rsp = false,
+    .include_name = true,
+    .include_txpower = true,
+    .min_interval = 0x20,
+    .max_interval = 0x40,
+    .appearance = 0,
+    .manufacturer_len = 0,
+    .p_manufacturer_data = nullptr,
+    .service_data_len = 0,
+    .p_service_data = nullptr,
+    .service_uuid_len = sizeof(piezoServiceUuid),
+    .p_service_uuid = piezoServiceUuid,
+    .flag = (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT),
+};
+}
+
+BLEManager *BLEManager::instance = nullptr;
 
 BLEManager::BLEManager(LEDController *leds, PowerManager *power, OTAManager *ota)
-    : ledController(leds), powerManager(power), otaManager(ota), pServer(nullptr),
-      piezoService(nullptr), piezoCharacteristic(nullptr), batteryCharacteristic(nullptr),
-      firmwareVersionCharacteristic(nullptr),
-#ifdef CONFIG_BT_BLE_50_FEATURES_SUPPORTED
-      pMultiAdvertising(nullptr),
-#endif
-      deviceConnected(false), isInitialized(false),
-      hitTime(0), ledStatusTaskHandle(nullptr)
+    : ledController(leds),
+      powerManager(power),
+      otaManager(ota),
+      deviceConnected(false),
+      isInitialized(false),
+      hitTime(0),
+      gattsIf(ESP_GATT_IF_NONE),
+      connId(0),
+      ledStatusTaskHandle(nullptr),
+      advConfigDone(0)
 {
+    std::fill(std::begin(piezoHandles), std::end(piezoHandles), 0);
+    std::fill(std::begin(otaHandles), std::end(otaHandles), 0);
 }
 
 bool BLEManager::begin()
@@ -24,195 +188,57 @@ bool BLEManager::begin()
         return true;
     }
 
-    // Initialize BLE
-    String deviceName = BLE_SERVER_NAME;
-    BLEDevice::init(deviceName.c_str());
-    
+    instance = this;
+    advConfigDone = ADV_CONFIG_FLAG;
+    hitTime = millis();
+
+    esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_bt_controller_init(&bt_cfg));
+    ESP_ERROR_CHECK(esp_bt_controller_enable(ESP_BT_MODE_BLE));
+    ESP_ERROR_CHECK(esp_bluedroid_init());
+    ESP_ERROR_CHECK(esp_bluedroid_enable());
+    ESP_ERROR_CHECK(esp_ble_gatts_register_callback(gattsEventHandler));
+    ESP_ERROR_CHECK(esp_ble_gap_register_callback(gapEventHandler));
+    ESP_ERROR_CHECK(esp_ble_gatts_app_register(0));
+    ESP_ERROR_CHECK(esp_ble_gatt_set_local_mtu(517));
+    registerBLEEventCallback();
+    configurePhy();
+    if (otaManager)
+    {
+        otaManager->setStatusCallback([this](const std::string &status)
+                                      { sendOtaStatus(status); });
+    }
+    isInitialized = true;
+    return true;
+}
+
+void BLEManager::configurePhy()
+{
 #ifdef CONFIG_BT_BLE_50_FEATURES_SUPPORTED
     if (BLE_CODED_PHY_PREFERRED)
     {
-        esp_err_t phyErr = esp_ble_gap_set_prefered_default_phy(
-            ESP_BLE_GAP_PHY_CODED_PREF_MASK | ESP_BLE_GAP_PHY_1M_PREF_MASK,
-            ESP_BLE_GAP_PHY_CODED_PREF_MASK | ESP_BLE_GAP_PHY_1M_PREF_MASK
-        );
-        if (phyErr == ESP_OK)
-        {
-            Serial.println("PHY preferences set: Coded PHY preferred, 1M PHY fallback");
-        }
-        else
-        {
-            Serial.print("Failed to set PHY preferences: ");
-            Serial.println(phyErr);
-        }
+        esp_ble_gap_set_prefered_default_phy(ESP_BLE_GAP_PHY_CODED_PREF_MASK | ESP_BLE_GAP_PHY_1M_PREF_MASK,
+                                             ESP_BLE_GAP_PHY_CODED_PREF_MASK | ESP_BLE_GAP_PHY_1M_PREF_MASK);
     }
 #endif
-    
-    // Register BLE event callback for monitoring
-    registerBLEEventCallback();
+}
 
-    // Create the BLE Server
-    pServer = BLEDevice::createServer();
-    pServer->setCallbacks(new ServerCallbacks(this));
+void BLEManager::initGap()
+{
+    esp_ble_gap_set_device_name(BLE_SERVER_NAME);
+    esp_ble_gap_config_adv_data(&advData);
+}
 
-    // Create the BLE Service and Characteristics
-    piezoService = pServer->createService(SERVICE_UUID);
+void BLEManager::initGatt()
+{
+    ESP_ERROR_CHECK(esp_ble_gatts_create_attr_tab(piezo_gatt_db, gattsIf, PIEZO_IDX_NB, 0));
+    ESP_ERROR_CHECK(esp_ble_gatts_create_attr_tab(ota_gatt_db, gattsIf, OTA_IDX_NB, 1));
+}
 
-    piezoCharacteristic = piezoService->createCharacteristic(
-        CHARACTERISTIC,
-        BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_WRITE);
-
-    batteryCharacteristic = piezoService->createCharacteristic(
-        BATTERY_CHARACTERISTIC,
-        BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
-
-    firmwareVersionCharacteristic = piezoService->createCharacteristic(
-        FIRMWARE_VERSION_CHARACTERISTIC,
-        BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
-
-    // Add Descriptors and Callbacks
-    piezoCharacteristic->addDescriptor(new BLE2902());
-    batteryCharacteristic->addDescriptor(new BLE2902());
-    firmwareVersionCharacteristic->addDescriptor(new BLE2902());
-    piezoCharacteristic->setCallbacks(new WriteCallbacks(this));
-    firmwareVersionCharacteristic->setValue(FIRMWARE_VERSION);
-
-    // Start the service
-    piezoService->start();
-
-    // Initialize OTA service
-    if (otaManager)
-    {
-        otaManager->begin(pServer);
-    }
-
-#ifdef CONFIG_BT_BLE_50_FEATURES_SUPPORTED
-    if (BLE_LONG_RANGE_ENABLED && BLE_CODED_PHY_PREFERRED)
-    {
-        pMultiAdvertising = new BLEMultiAdvertising(1);
-        
-        esp_ble_gap_ext_adv_params_t ext_adv_params = {
-            .type = ESP_BLE_GAP_SET_EXT_ADV_PROP_CONNECTABLE,
-            .interval_min = 0x30,
-            .interval_max = 0x60,
-            .channel_map = ADV_CHNL_ALL,
-            .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
-            .filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
-            .primary_phy = ESP_BLE_GAP_PHY_1M,
-            .max_skip = 0,
-            .secondary_phy = ESP_BLE_GAP_PHY_CODED,
-            .sid = 0,
-            .scan_req_notif = false,
-        };
-        
-        if (!pMultiAdvertising->setAdvertisingParams(0, &ext_adv_params))
-        {
-            Serial.println("Failed to set extended advertising parameters");
-            delete pMultiAdvertising;
-            pMultiAdvertising = nullptr;
-        }
-        else
-        {
-            BLEUUID piezoUuid(SERVICE_UUID);
-            BLEUUID otaUuid(OTA_SERVICE_UUID);
-            
-            piezoUuid = piezoUuid.to128();
-            otaUuid = otaUuid.to128();
-            
-            uint8_t advData[64];
-            uint16_t advLen = 0;
-            
-            advData[advLen++] = 0x02;
-            advData[advLen++] = 0x01;
-            advData[advLen++] = 0x06;
-            
-            uint8_t nameLen = strlen(deviceName.c_str());
-            if (nameLen > 0 && advLen + nameLen + 2 <= sizeof(advData))
-            {
-                advData[advLen++] = nameLen + 1;
-                advData[advLen++] = 0x09;
-                memcpy(&advData[advLen], deviceName.c_str(), nameLen);
-                advLen += nameLen;
-            }
-            
-            if (advLen + 18 <= sizeof(advData))
-            {
-                advData[advLen++] = 17;
-                advData[advLen++] = 0x06;
-                memcpy(&advData[advLen], piezoUuid.getNative()->uuid.uuid128, 16);
-                advLen += 16;
-            }
-            
-            uint8_t scanRspData[64];
-            uint16_t scanRspLen = 0;
-            
-            if (scanRspLen + 18 <= sizeof(scanRspData))
-            {
-                scanRspData[scanRspLen++] = 17;
-                scanRspData[scanRspLen++] = 0x06;
-                memcpy(&scanRspData[scanRspLen], otaUuid.getNative()->uuid.uuid128, 16);
-                scanRspLen += 16;
-            }
-            
-            pMultiAdvertising->setAdvertisingData(0, advLen, advData);
-            pMultiAdvertising->setScanRspData(0, scanRspLen, scanRspData);
-            pMultiAdvertising->setDuration(0, 0, 0);
-            
-            if (!pMultiAdvertising->start())
-            {
-                Serial.println("Failed to start extended advertising");
-                delete pMultiAdvertising;
-                pMultiAdvertising = nullptr;
-            }
-            else
-            {
-                Serial.println("Extended advertising started: 1M PHY (primary), Coded PHY (secondary)");
-                Serial.println("Device should be visible to standard BLE scanners");
-                Serial.println("Long range available when connecting with Coded PHY support");
-            }
-        }
-    }
-#endif
-
-#ifdef CONFIG_BT_BLE_50_FEATURES_SUPPORTED
-    if (!pMultiAdvertising)
-#endif
-    {
-        BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-        pAdvertising->addServiceUUID(piezoService->getUUID());
-        pAdvertising->addServiceUUID(OTA_SERVICE_UUID);
-        pAdvertising->setScanResponse(true);
-        
-        pAdvertising->setMinInterval(0x20);
-        pAdvertising->setMaxInterval(0x40);
-        pAdvertising->setAdvertisementType(ADV_TYPE_IND);
-
-        BLEAdvertisementData advertisementData;
-        advertisementData.setName(deviceName.c_str());
-        pAdvertising->setAdvertisementData(advertisementData);
-
-        BLEDevice::startAdvertising();
-    }
-
-    Serial.println("Waiting for a client connection to notify...");
-    
-    Serial.println("=== ESP32-S3 BLE INITIALIZATION COMPLETE ===");
-    logBLEPHYInfo();
-#ifdef CONFIG_BT_BLE_50_FEATURES_SUPPORTED
-    if (pMultiAdvertising)
-    {
-        Serial.println("BLE Long Range (Coded PHY) advertising ACTIVE");
-    }
-    else
-    {
-        Serial.println("BLE Long Range (Coded PHY) not available, using standard advertising");
-    }
-#else
-    Serial.println("BLE 5.0 features not enabled, using standard advertising");
-#endif
-    Serial.println("Send 'ble_status' or 'ble_phy' commands to check status");
-
-    isInitialized = true;
-    return true;
+void BLEManager::startAdvertising()
+{
+    ESP_ERROR_CHECK(esp_ble_gap_start_advertising(&advParams));
 }
 
 void BLEManager::onPiezoHit()
@@ -220,112 +246,93 @@ void BLEManager::onPiezoHit()
     hitTime = millis();
 }
 
+void BLEManager::sendNotification(uint16_t handle, const uint8_t *value, uint16_t length)
+{
+    if (!deviceConnected || gattsIf == ESP_GATT_IF_NONE || handle == 0)
+    {
+        return;
+    }
+    esp_ble_gatts_send_indicate(gattsIf, connId, handle, length, const_cast<uint8_t *>(value), false);
+}
+
 void BLEManager::sendPiezoValue(int piezoValue)
 {
-    if (deviceConnected)
+    if (!deviceConnected)
     {
-        uint8_t data[4];
-        uint16_t timeInHundredths = (millis() - hitTime) / 10;
-        data[0] = piezoValue & 0xFF;
-        data[1] = piezoValue >> 8;
-        data[2] = timeInHundredths & 0xFF;
-        data[3] = timeInHundredths >> 8;
-        piezoCharacteristic->setValue(data, 4);
-        piezoCharacteristic->notify();
-        Serial.print("Sent piezo value: ");
-        Serial.println(piezoValue);
+        return;
     }
-    else
-    {
-        Serial.println("Device not connected, cannot send notification.");
-    }
+    uint8_t data[4];
+    uint16_t delta = static_cast<uint16_t>((millis() - hitTime) / 10);
+    data[0] = piezoValue & 0xFF;
+    data[1] = (piezoValue >> 8) & 0xFF;
+    data[2] = delta & 0xFF;
+    data[3] = (delta >> 8) & 0xFF;
+    sendNotification(piezoHandles[PIEZO_IDX_CHAR_VAL_HIT], data, sizeof(data));
 }
 
 void BLEManager::sendBatteryLevel(int percentage)
 {
-    if (deviceConnected)
+    if (!deviceConnected)
     {
-        String valueToSend = String(percentage);
-        batteryCharacteristic->setValue(valueToSend.c_str());
-        batteryCharacteristic->notify();
-        Serial.println("Battery level sent: " + valueToSend);
+        return;
     }
-    else
-    {
-        Serial.println("Device not connected, cannot send notification.");
-    }
+    std::string payload = std::to_string(std::clamp(percentage, 0, 100));
+    sendNotification(piezoHandles[PIEZO_IDX_CHAR_VAL_BATT], reinterpret_cast<const uint8_t *>(payload.c_str()), payload.size());
 }
 
 void BLEManager::sendFirmwareVersion()
 {
-    if (deviceConnected && firmwareVersionCharacteristic)
+    if (!deviceConnected)
     {
-        firmwareVersionCharacteristic->setValue(FIRMWARE_VERSION);
-        firmwareVersionCharacteristic->notify();
-        Serial.println("Firmware version sent: " + String(FIRMWARE_VERSION));
+        return;
     }
-    else
-    {
-        Serial.println("Device not connected or firmware version characteristic not available.");
-    }
+    const uint8_t *data = reinterpret_cast<const uint8_t *>(FIRMWARE_VERSION);
+    sendNotification(piezoHandles[PIEZO_IDX_CHAR_VAL_FW], data, strlen(FIRMWARE_VERSION));
+}
+
+void BLEManager::sendOtaStatus(const std::string &status)
+{
+    sendNotification(otaHandles[OTA_IDX_CHAR_VAL_STATUS], reinterpret_cast<const uint8_t *>(status.c_str()), status.size());
 }
 
 BLECommandData BLEManager::parseCommand(const std::string &value)
 {
-    BLECommandData result = {BLECommand::UNKNOWN, 0};
-
-    // RGB color command: rgb:255,0,0
-    if (value.substr(0, 4) == "rgb:")
+    BLECommandData result{BLECommand::UNKNOWN, 0};
+    if (value.rfind("rgb:", 0) == 0)
     {
         result.command = BLECommand::SET_RGB_COLOR;
-        result.value = 0; // We'll parse RGB values in the handler
         return result;
     }
-
-    // Blink color command: blinkrgb:255,0,0
-    if (value.substr(0, 9) == "blinkrgb:")
+    if (value.rfind("blinkrgb:", 0) == 0)
     {
         result.command = BLECommand::BLINK_COLOR;
-        result.value = 0; // We'll parse RGB values in the handler
         return result;
     }
-
-    // Predefined color command: color:red, color:green, etc.
-    if (value.substr(0, 6) == "color:")
+    if (value.rfind("color:", 0) == 0)
     {
         result.command = BLECommand::SET_COLOR;
-        result.value = 0; // We'll parse color name in the handler
         return result;
     }
-
-    // Individual channel commands: r:255, g:128, b:0
-    if (value.substr(0, 2) == "r:")
+    if (value.rfind("r:", 0) == 0)
     {
         result.command = BLECommand::SET_RED;
         result.value = std::stoi(value.substr(2));
         return result;
     }
-    else if (value.substr(0, 2) == "g:")
+    if (value.rfind("g:", 0) == 0)
     {
         result.command = BLECommand::SET_GREEN;
         result.value = std::stoi(value.substr(2));
         return result;
     }
-    else if (value.substr(0, 2) == "b:")
+    if (value.rfind("b:", 0) == 0)
     {
         result.command = BLECommand::SET_BRIGHTNESS;
         result.value = std::stoi(value.substr(2));
         return result;
     }
-
-    // Handle valueless commands
-    if (value == "start")
+    if (value == "start" || value.rfind("start:", 0) == 0)
         result.command = BLECommand::START;
-    else if (value.substr(0, 6) == "start:")
-    {
-        result.command = BLECommand::START;
-        result.value = 0; // We'll parse color in the handler
-    }
     else if (value == "sleep")
         result.command = BLECommand::SLEEP;
     else if (value == "game1")
@@ -335,112 +342,167 @@ BLECommandData BLEManager::parseCommand(const std::string &value)
     else if (value == "ble_phy")
         result.command = BLECommand::BLE_PHY_INFO;
     else if (value == "off")
-    {
         result.command = BLECommand::SET_COLOR;
-        result.value = 0; // We'll handle "off" in the color handler
-    }
-
     return result;
 }
 
 bool BLEManager::parseRgbValues(const std::string &rgbStr, int &red, int &green, int &blue)
 {
-    size_t firstComma = rgbStr.find(',');
-    size_t secondComma = rgbStr.find(',', firstComma + 1);
-
-    if (firstComma != std::string::npos && secondComma != std::string::npos)
+    size_t first = rgbStr.find(',');
+    size_t second = rgbStr.find(',', first + 1);
+    if (first == std::string::npos || second == std::string::npos)
     {
-        red = std::stoi(rgbStr.substr(0, firstComma));
-        green = std::stoi(rgbStr.substr(firstComma + 1, secondComma - firstComma - 1));
-        blue = std::stoi(rgbStr.substr(secondComma + 1));
-
-        // Constrain values to 0-255 range
-        red = constrain(red, 0, 255);
-        green = constrain(green, 0, 255);
-        blue = constrain(blue, 0, 255);
-        return true;
+        return false;
     }
-    return false;
+    red = std::stoi(rgbStr.substr(0, first));
+    green = std::stoi(rgbStr.substr(first + 1, second - first - 1));
+    blue = std::stoi(rgbStr.substr(second + 1));
+    red = std::clamp(red, 0, 255);
+    green = std::clamp(green, 0, 255);
+    blue = std::clamp(blue, 0, 255);
+    return true;
 }
 
 void BLEManager::handleRGBCommand(const std::string &value)
 {
-    // Parse RGB values from "rgb:r,g,b" format
-    std::string rgbStr = value.substr(4); // Remove "rgb:" prefix
-    int red, green, blue;
-
-    if (parseRgbValues(rgbStr, red, green, blue))
+    int r, g, b;
+    if (parseRgbValues(value.substr(4), r, g, b) && ledController)
     {
-        if (ledController)
-        {
-            ledController->setRgbColor(red, green, blue);
-        }
-    }
-    else
-    {
-        Serial.println("Invalid RGB format. Use: rgb:r,g,b");
+        ledController->setRgbColor(r, g, b);
     }
 }
 
 void BLEManager::handleColorCommand(const std::string &value)
 {
+    if (!ledController)
+    {
+        return;
+    }
     if (value == "off")
     {
-        if (ledController)
-        {
-            ledController->setPredefinedColor("off");
-        }
+        ledController->setPredefinedColor("off");
+        return;
     }
-    else if (value.substr(0, 6) == "color:")
+    if (value.rfind("color:", 0) == 0)
     {
-        std::string colorName = value.substr(6); // Remove "color:" prefix
-        if (ledController)
-        {
-            ledController->setPredefinedColor(String(colorName.c_str()));
-        }
-    }
-    else
-    {
-        Serial.println("Invalid color command. Use: color:red/green/blue/white/yellow/magenta/cyan/off");
+        ledController->setPredefinedColor(value.substr(6));
     }
 }
 
 void BLEManager::handleBlinkColorCommand(const std::string &value)
 {
-    // Parse RGB values from "blinkrgb:r,g,b" format
-    std::string rgbStr = value.substr(9); // Remove "blinkrgb:" prefix
-    int red, green, blue;
-
-    if (parseRgbValues(rgbStr, red, green, blue))
+    int r, g, b;
+    if (parseRgbValues(value.substr(9), r, g, b) && ledController)
     {
-        if (ledController)
-        {
-            ledController->blinkColor(red, green, blue);
-        }
-    }
-    else
-    {
-        Serial.println("Invalid blink color format. Use: blinkrgb:r,g,b");
+        ledController->blinkColor(r, g, b);
     }
 }
 
 void BLEManager::handleStartColorCommand(const std::string &value)
 {
-    // Parse RGB values from "start:r,g,b" format
-    std::string rgbStr = value.substr(6); // Remove "start:" prefix
-    int red, green, blue;
+    int r, g, b;
+    if (parseRgbValues(value.substr(6), r, g, b) && ledController)
+    {
+        ledController->setRgbColor(r, g, b);
+    }
+}
 
-    if (parseRgbValues(rgbStr, red, green, blue))
+void BLEManager::handleWrite(uint16_t handle, const uint8_t *value, size_t len)
+{
+    if (handle == piezoHandles[PIEZO_IDX_CHAR_VAL_HIT])
     {
-        if (ledController)
+        std::string command(reinterpret_cast<const char *>(value), len);
+        BLECommandData cmdData = parseCommand(command);
+        switch (cmdData.command)
         {
-            ledController->setRgbColor(red, green, blue);
+        case BLECommand::START:
+            onPiezoHit();
+            if (command.rfind("start:", 0) == 0)
+            {
+                handleStartColorCommand(command);
+            }
+            break;
+        case BLECommand::SLEEP:
+            if (powerManager)
+            {
+                powerManager->goToDeepSleep();
+            }
+            break;
+        case BLECommand::SET_BRIGHTNESS:
+            if (ledController)
+            {
+                ledController->setBrightness(std::clamp(cmdData.value, 0, 255));
+            }
+            break;
+        case BLECommand::SET_RGB_COLOR:
+            handleRGBCommand(command);
+            break;
+        case BLECommand::BLINK_COLOR:
+            handleBlinkColorCommand(command);
+            break;
+        case BLECommand::SET_COLOR:
+            handleColorCommand(command);
+            break;
+        case BLECommand::SET_RED:
+            if (ledController)
+            {
+                ledController->setRedChannel(std::clamp(cmdData.value, 0, 255));
+            }
+            break;
+        case BLECommand::SET_GREEN:
+            if (ledController)
+            {
+                ledController->setGreenChannel(std::clamp(cmdData.value, 0, 255));
+            }
+            break;
+        case BLECommand::SET_BLUE:
+            if (ledController)
+            {
+                ledController->setBlueChannel(std::clamp(cmdData.value, 0, 255));
+            }
+            break;
+        case BLECommand::BLE_STATUS:
+            logBLEConnectionInfo();
+            break;
+        case BLECommand::BLE_PHY_INFO:
+            logBLEPHYInfo();
+            break;
+        default:
+            break;
         }
+        return;
     }
-    else
+
+    if (handle == otaHandles[OTA_IDX_CHAR_VAL_CMD] && otaManager)
     {
-        Serial.println("Invalid start color format. Use: start:r,g,b");
+        std::string cmd(reinterpret_cast<const char *>(value), len);
+        otaManager->handleCommand(cmd);
+        return;
     }
+
+    if (handle == otaHandles[OTA_IDX_CHAR_VAL_DATA] && otaManager)
+    {
+        otaManager->handleDataChunk(value, len);
+    }
+}
+
+void BLEManager::registerBLEEventCallback()
+{
+    ESP_LOGI(TAG, "BLE callbacks registered");
+}
+
+void BLEManager::logBLEConnectionInfo()
+{
+    ESP_LOGI(TAG, "Device %sconnected", deviceConnected ? "" : "not ");
+}
+
+void BLEManager::logBLEPHYInfo()
+{
+#ifdef CONFIG_BT_BLE_50_FEATURES_SUPPORTED
+    ESP_LOGI(TAG, "PHY modes: 1M, 2M, Coded");
+#else
+    ESP_LOGI(TAG, "PHY modes: 1M");
+#endif
 }
 
 void BLEManager::startLedStatusTask()
@@ -451,212 +513,144 @@ void BLEManager::startLedStatusTask()
             ledStatusTask,
             "LEDStatus",
             2048,
-            this, // Pass this instance as parameter
+            this,
             1,
             &ledStatusTaskHandle,
             APP_CPU_NUM);
     }
 }
 
-// Static task functions
 void BLEManager::initialDeviceInfoTask(void *pvParameters)
 {
-    BLEManager *bleManager = static_cast<BLEManager *>(pvParameters);
-    vTaskDelay(2000 / portTICK_PERIOD_MS); // Wait for connection to stabilize
-
-    // Send battery level
-    if (bleManager->powerManager)
+    auto *manager = static_cast<BLEManager *>(pvParameters);
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    if (manager->powerManager)
     {
-        int percentage = bleManager->powerManager->getBatteryPercentage();
-        bleManager->sendBatteryLevel(percentage);
+        int percentage = manager->powerManager->getBatteryPercentage();
+        manager->sendBatteryLevel(percentage);
     }
-
-    // Send firmware version
-    bleManager->sendFirmwareVersion();
-
-    vTaskDelete(NULL); // Delete the task after it's done
+    manager->sendFirmwareVersion();
+    vTaskDelete(nullptr);
 }
 
 void BLEManager::ledStatusTask(void *pvParameters)
 {
-    BLEManager *bleManager = static_cast<BLEManager *>(pvParameters);
-
+    auto *manager = static_cast<BLEManager *>(pvParameters);
     for (;;)
     {
-        if (!bleManager->deviceConnected)
+        if (!manager->deviceConnected && manager->ledController)
         {
-            if (bleManager->ledController)
-            {
-                // Turn off all LEDs
-                bleManager->ledController->setRgbColor(0, 0, 0);
-                vTaskDelay(1000 / portTICK_PERIOD_MS);
-                // Blink blue LED to indicate "waiting for connection"
-                bleManager->ledController->setRgbColor(0, 0, 255);
-                vTaskDelay(1000 / portTICK_PERIOD_MS);
-                Serial.println("Device not connected - blinking blue");
-            }
+            manager->ledController->setRgbColor(0, 0, 0);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            manager->ledController->setRgbColor(0, 0, 255);
+            vTaskDelay(pdMS_TO_TICKS(1000));
         }
         else
         {
-            vTaskDelay(100 / portTICK_PERIOD_MS);
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
 }
 
-// WriteCallbacks Implementation
-void BLEManager::WriteCallbacks::onWrite(BLECharacteristic *pCharacteristic)
+void BLEManager::gapEventHandler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
 {
-    std::string value = pCharacteristic->getValue();
-    Serial.print("Received value: ");
-    Serial.println(value.c_str());
-
-    BLECommandData cmdData = parseCommand(value);
-
-    switch (cmdData.command)
+    if (!instance)
     {
-    case BLECommand::START:
-        bleManager->onPiezoHit();
-        // If command has color info, set the color
-        if (value.substr(0, 6) == "start:")
+        return;
+    }
+    switch (event)
+    {
+    case ESP_GAP_BLE_ADV_DATA_SET_COMPLETE_EVT:
+        instance->advConfigDone &= ~ADV_CONFIG_FLAG;
+        if (instance->advConfigDone == 0)
         {
-            bleManager->handleStartColorCommand(value);
+            instance->startAdvertising();
         }
         break;
-
-    case BLECommand::SLEEP:
-        if (bleManager->powerManager)
+    case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
+        if (param->adv_start_cmpl.status != ESP_BT_STATUS_SUCCESS)
         {
-            bleManager->powerManager->goToDeepSleep();
+            ESP_LOGE(TAG, "Advertising start failed");
         }
         break;
-
-    case BLECommand::SET_BRIGHTNESS:
-        if (bleManager->ledController)
-        {
-            bleManager->ledController->setBrightness(constrain(cmdData.value, 0, 255));
-        }
+    case ESP_GAP_BLE_UPDATE_CONN_PARAMS_EVT:
+        ESP_LOGI(TAG, "Conn params interval=%d latency=%d timeout=%d",
+                 param->update_conn_params.int_min,
+                 param->update_conn_params.latency,
+                 param->update_conn_params.timeout);
         break;
-
-    case BLECommand::SET_RGB_COLOR:
-        bleManager->handleRGBCommand(value);
-        break;
-
-    case BLECommand::BLINK_COLOR:
-        bleManager->handleBlinkColorCommand(value);
-        break;
-
-    case BLECommand::SET_COLOR:
-        bleManager->handleColorCommand(value);
-        break;
-
-    case BLECommand::SET_RED:
-        if (bleManager->ledController)
-        {
-            bleManager->ledController->setRedChannel(constrain(cmdData.value, 0, 255));
-        }
-        break;
-
-    case BLECommand::SET_GREEN:
-        if (bleManager->ledController)
-        {
-            bleManager->ledController->setGreenChannel(constrain(cmdData.value, 0, 255));
-        }
-        break;
-
-    case BLECommand::SET_BLUE:
-        if (bleManager->ledController)
-        {
-            bleManager->ledController->setBlueChannel(constrain(cmdData.value, 0, 255));
-        }
-        break;
-
-    case BLECommand::BLE_STATUS:
-        bleManager->logBLEConnectionInfo();
-        break;
-
-    case BLECommand::BLE_PHY_INFO:
-        bleManager->logBLEPHYInfo();
-        break;
-
     default:
-        Serial.println("Unknown command received");
         break;
     }
 }
 
-// ServerCallbacks Implementation
-void BLEManager::ServerCallbacks::onConnect(BLEServer *pServer)
+void BLEManager::gattsEventHandler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
 {
-    Serial.println("Device connected");
-    bleManager->deviceConnected = true;
-    
-    // PHY preferences are set during initialization to prefer Coded PHY
-    // The ESP32-S3 will automatically negotiate Coded PHY if the central device supports it
-    
-    if (bleManager->powerManager)
+    if (!instance)
     {
-        bleManager->powerManager->setConnected(true);
+        return;
     }
-    if (bleManager->ledController)
-    {
-        bleManager->ledController->blinkColor(255, 255, 255); // White for connection confirmation
-    }
-    
-    // Log BLE connection and PHY information
-    bleManager->logBLEConnectionInfo();
-    bleManager->logBLEPHYInfo();
-    
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    xTaskCreate(initialDeviceInfoTask, "InitDeviceInfo", 2048, bleManager, 1, NULL);
-}
 
-void BLEManager::ServerCallbacks::onDisconnect(BLEServer *pServer)
-{
-    Serial.println("Device disconnected");
-    bleManager->deviceConnected = false;
-    if (bleManager->powerManager)
+    switch (event)
     {
-        bleManager->powerManager->setConnected(false);
+    case ESP_GATTS_REG_EVT:
+        instance->gattsIf = gatts_if;
+        instance->initGap();
+        instance->initGatt();
+        break;
+    case ESP_GATTS_CREAT_ATTR_TAB_EVT:
+        if (param->add_attr_tab.status != ESP_GATT_OK)
+        {
+            ESP_LOGE(TAG, "Attr table create failed");
+            break;
+        }
+        if (param->add_attr_tab.svc_inst_id == 0 && param->add_attr_tab.num_handle == PIEZO_IDX_NB)
+        {
+            memcpy(instance->piezoHandles, param->add_attr_tab.handles, sizeof(instance->piezoHandles));
+            esp_ble_gatts_start_service(instance->piezoHandles[PIEZO_IDX_SVC]);
+        }
+        else if (param->add_attr_tab.svc_inst_id == 1 && param->add_attr_tab.num_handle == OTA_IDX_NB)
+        {
+            memcpy(instance->otaHandles, param->add_attr_tab.handles, sizeof(instance->otaHandles));
+            esp_ble_gatts_start_service(instance->otaHandles[OTA_IDX_SVC]);
+        }
+        break;
+    case ESP_GATTS_CONNECT_EVT:
+        instance->connId = param->connect.conn_id;
+        instance->deviceConnected = true;
+        if (instance->powerManager)
+        {
+            instance->powerManager->setConnected(true);
+        }
+        if (instance->ledController)
+        {
+            instance->ledController->blinkColor(255, 255, 255);
+        }
+        instance->logBLEConnectionInfo();
+        esp_ble_gap_update_conn_params(&param->connect.conn_params);
+        xTaskCreate(BLEManager::initialDeviceInfoTask, "InitDeviceInfo", 4096, instance, 1, nullptr);
+        instance->startLedStatusTask();
+        break;
+    case ESP_GATTS_DISCONNECT_EVT:
+        instance->deviceConnected = false;
+        if (instance->powerManager)
+        {
+            instance->powerManager->setConnected(false);
+        }
+        instance->startAdvertising();
+        break;
+    case ESP_GATTS_WRITE_EVT:
+        if (param->write.need_rsp)
+        {
+            esp_gatt_status_t status = ESP_GATT_OK;
+            esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, status, nullptr);
+        }
+        instance->handleWrite(param->write.handle, param->write.value, param->write.len);
+        break;
+    case ESP_GATTS_MTU_EVT:
+        ESP_LOGI(TAG, "MTU updated to %d", param->mtu.mtu);
+        break;
+    default:
+        break;
     }
-#ifdef CONFIG_BT_BLE_50_FEATURES_SUPPORTED
-    if (bleManager->pMultiAdvertising)
-    {
-        uint8_t instance = 0;
-        bleManager->pMultiAdvertising->start(1, 0);
-    }
-    else
-#endif
-    {
-        pServer->getAdvertising()->start();
-    }
-}
-
-// BLE monitoring and diagnostics implementation
-void BLEManager::registerBLEEventCallback()
-{
-    // Note: BLE event monitoring will be handled through connection callbacks
-    Serial.println("BLE event monitoring initialized");
-}
-
-void BLEManager::logBLEConnectionInfo()
-{
-    if (deviceConnected) {
-        Serial.println("=== CURRENT BLE CONNECTION INFO ===");
-        Serial.println("Device is connected");
-        Serial.println("BLE 5.0 features enabled");
-        Serial.println("Long Range (Coded PHY) support available");
-    } else {
-        Serial.println("No BLE connection active");
-    }
-}
-
-void BLEManager::logBLEPHYInfo()
-{
-    Serial.println("=== BLE PHY CAPABILITIES ===");
-    Serial.println("ESP32-S3 BLE 5.0 Features:");
-    Serial.println("- 1M PHY (Standard)");
-    Serial.println("- 2M PHY (High Speed)");
-    Serial.println("- Coded PHY S=2 (Long Range)");
-    Serial.println("- Coded PHY S=8 (Maximum Range)");
-    Serial.println("Long Range provides up to 4x range improvement");
 }

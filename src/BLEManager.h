@@ -1,12 +1,13 @@
 #ifndef BLE_MANAGER_H
 #define BLE_MANAGER_H
 
-#include <Arduino.h>
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
-#include <BLEAdvertising.h>
+#include <cstdint>
+#include <functional>
+#include <string>
+#include <esp_gap_ble_api.h>
+#include <esp_gatts_api.h>
+#include <esp_bt.h>
+#include <esp_bt_main.h>
 #include "Config.h"
 
 class LEDController;
@@ -42,84 +43,48 @@ private:
     LEDController *ledController;
     PowerManager *powerManager;
     OTAManager *otaManager;
-
-    BLEServer *pServer;
-    BLEService *piezoService;
-    BLECharacteristic *piezoCharacteristic;
-    BLECharacteristic *batteryCharacteristic;
-    BLECharacteristic *firmwareVersionCharacteristic;
-
-#ifdef CONFIG_BT_BLE_50_FEATURES_SUPPORTED
-    BLEMultiAdvertising *pMultiAdvertising;
-#endif
-
     bool deviceConnected;
     bool isInitialized;
-    unsigned long hitTime;
+    uint32_t hitTime;
+    esp_gatt_if_t gattsIf;
+    uint16_t connId;
+    TaskHandle_t ledStatusTaskHandle;
+    uint16_t piezoHandles[10];
+    uint16_t otaHandles[10];
+    uint8_t advConfigDone;
+    static BLEManager *instance;
 
 public:
     BLEManager(LEDController *leds, PowerManager *power, OTAManager *ota);
-
-    // Initialization
     bool begin();
-
-    // Connection state
     bool isConnected() const { return deviceConnected; }
-
-    // Data sending
     void sendPiezoValue(int piezoValue);
     void sendBatteryLevel(int percentage);
     void sendFirmwareVersion();
-
-    // Hit detection
     void onPiezoHit();
-
-    // Command parsing
     static BLECommandData parseCommand(const std::string &value);
-
-    // Task functions
     static void initialDeviceInfoTask(void *pvParameters);
     static void ledStatusTask(void *pvParameters);
     void startLedStatusTask();
-
-    // BLE monitoring and diagnostics
     void logBLEConnectionInfo();
     void logBLEPHYInfo();
     void registerBLEEventCallback();
 
-    // Callback classes
-    class WriteCallbacks : public BLECharacteristicCallbacks
-    {
-    private:
-        BLEManager *bleManager;
-
-    public:
-        WriteCallbacks(BLEManager *manager) : bleManager(manager) {}
-        void onWrite(BLECharacteristic *pCharacteristic) override;
-    };
-
-    class ServerCallbacks : public BLEServerCallbacks
-    {
-    private:
-        BLEManager *bleManager;
-
-    public:
-        ServerCallbacks(BLEManager *manager) : bleManager(manager) {}
-        void onConnect(BLEServer *pServer) override;
-        void onDisconnect(BLEServer *pServer) override;
-    };
-
 private:
-    TaskHandle_t ledStatusTaskHandle;
-
-    // Helper methods for command processing
     void handleRGBCommand(const std::string &value);
     void handleColorCommand(const std::string &value);
     void handleBlinkColorCommand(const std::string &value);
     void handleStartColorCommand(const std::string &value);
-
-    // Common RGB parsing helper
     bool parseRgbValues(const std::string &rgbStr, int &red, int &green, int &blue);
+    void handleWrite(uint16_t handle, const uint8_t *value, size_t len);
+    void sendNotification(uint16_t handle, const uint8_t *value, uint16_t length);
+    void startAdvertising();
+    void initGap();
+    void initGatt();
+    void sendOtaStatus(const std::string &status);
+    void configurePhy();
+    static void gapEventHandler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param);
+    static void gattsEventHandler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param);
 };
 
-#endif // BLE_MANAGER_H
+#endif
