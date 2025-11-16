@@ -27,14 +27,13 @@ bool BLEManager::begin()
     // Initialize BLE
     String deviceName = BLE_SERVER_NAME;
     BLEDevice::init(deviceName.c_str());
-    
+
 #ifdef CONFIG_BT_BLE_50_FEATURES_SUPPORTED
     if (BLE_CODED_PHY_PREFERRED)
     {
         esp_err_t phyErr = esp_ble_gap_set_prefered_default_phy(
             ESP_BLE_GAP_PHY_CODED_PREF_MASK | ESP_BLE_GAP_PHY_1M_PREF_MASK,
-            ESP_BLE_GAP_PHY_CODED_PREF_MASK | ESP_BLE_GAP_PHY_1M_PREF_MASK
-        );
+            ESP_BLE_GAP_PHY_CODED_PREF_MASK | ESP_BLE_GAP_PHY_1M_PREF_MASK);
         if (phyErr == ESP_OK)
         {
             Serial.println("PHY preferences set: Coded PHY preferred, 1M PHY fallback");
@@ -46,7 +45,7 @@ bool BLEManager::begin()
         }
     }
 #endif
-    
+
     // Register BLE event callback for monitoring
     registerBLEEventCallback();
 
@@ -89,7 +88,7 @@ bool BLEManager::begin()
     if (BLE_LONG_RANGE_ENABLED && BLE_CODED_PHY_PREFERRED)
     {
         pMultiAdvertising = new BLEMultiAdvertising(1);
-        
+
         esp_ble_gap_ext_adv_params_t ext_adv_params = {
             .type = ESP_BLE_GAP_SET_EXT_ADV_PROP_CONNECTABLE,
             .interval_min = 0x30,
@@ -103,7 +102,7 @@ bool BLEManager::begin()
             .sid = 0,
             .scan_req_notif = false,
         };
-        
+
         if (!pMultiAdvertising->setAdvertisingParams(0, &ext_adv_params))
         {
             Serial.println("Failed to set extended advertising parameters");
@@ -114,17 +113,17 @@ bool BLEManager::begin()
         {
             BLEUUID piezoUuid(SERVICE_UUID);
             BLEUUID otaUuid(OTA_SERVICE_UUID);
-            
+
             piezoUuid = piezoUuid.to128();
             otaUuid = otaUuid.to128();
-            
+
             uint8_t advData[64];
             uint16_t advLen = 0;
-            
+
             advData[advLen++] = 0x02;
             advData[advLen++] = 0x01;
             advData[advLen++] = 0x06;
-            
+
             uint8_t nameLen = strlen(deviceName.c_str());
             if (nameLen > 0 && advLen + nameLen + 2 <= sizeof(advData))
             {
@@ -133,7 +132,7 @@ bool BLEManager::begin()
                 memcpy(&advData[advLen], deviceName.c_str(), nameLen);
                 advLen += nameLen;
             }
-            
+
             if (advLen + 18 <= sizeof(advData))
             {
                 advData[advLen++] = 17;
@@ -141,10 +140,10 @@ bool BLEManager::begin()
                 memcpy(&advData[advLen], piezoUuid.getNative()->uuid.uuid128, 16);
                 advLen += 16;
             }
-            
+
             uint8_t scanRspData[64];
             uint16_t scanRspLen = 0;
-            
+
             if (scanRspLen + 18 <= sizeof(scanRspData))
             {
                 scanRspData[scanRspLen++] = 17;
@@ -152,11 +151,11 @@ bool BLEManager::begin()
                 memcpy(&scanRspData[scanRspLen], otaUuid.getNative()->uuid.uuid128, 16);
                 scanRspLen += 16;
             }
-            
+
             pMultiAdvertising->setAdvertisingData(0, advLen, advData);
             pMultiAdvertising->setScanRspData(0, scanRspLen, scanRspData);
             pMultiAdvertising->setDuration(0, 0, 0);
-            
+
             if (!pMultiAdvertising->start())
             {
                 Serial.println("Failed to start extended advertising");
@@ -181,7 +180,7 @@ bool BLEManager::begin()
         pAdvertising->addServiceUUID(piezoService->getUUID());
         pAdvertising->addServiceUUID(OTA_SERVICE_UUID);
         pAdvertising->setScanResponse(true);
-        
+
         pAdvertising->setMinInterval(0x20);
         pAdvertising->setMaxInterval(0x40);
         pAdvertising->setAdvertisementType(ADV_TYPE_IND);
@@ -194,7 +193,7 @@ bool BLEManager::begin()
     }
 
     Serial.println("Waiting for a client connection to notify...");
-    
+
     Serial.println("=== ESP32-S3 BLE INITIALIZATION COMPLETE ===");
     logBLEPHYInfo();
 #ifdef CONFIG_BT_BLE_50_FEATURES_SUPPORTED
@@ -589,10 +588,10 @@ void BLEManager::ServerCallbacks::onConnect(BLEServer *pServer)
 {
     Serial.println("Device connected");
     bleManager->deviceConnected = true;
-    
+
     // PHY preferences are set during initialization to prefer Coded PHY
     // The ESP32-S3 will automatically negotiate Coded PHY if the central device supports it
-    
+
     if (bleManager->powerManager)
     {
         bleManager->powerManager->setConnected(true);
@@ -601,11 +600,11 @@ void BLEManager::ServerCallbacks::onConnect(BLEServer *pServer)
     {
         bleManager->ledController->blinkColor(255, 255, 255); // White for connection confirmation
     }
-    
+
     // Log BLE connection and PHY information
     bleManager->logBLEConnectionInfo();
     bleManager->logBLEPHYInfo();
-    
+
     vTaskDelay(1000 / portTICK_PERIOD_MS);
     xTaskCreate(initialDeviceInfoTask, "InitDeviceInfo", 2048, bleManager, 1, NULL);
 }
@@ -640,12 +639,15 @@ void BLEManager::registerBLEEventCallback()
 
 void BLEManager::logBLEConnectionInfo()
 {
-    if (deviceConnected) {
+    if (deviceConnected)
+    {
         Serial.println("=== CURRENT BLE CONNECTION INFO ===");
         Serial.println("Device is connected");
         Serial.println("BLE 5.0 features enabled");
         Serial.println("Long Range (Coded PHY) support available");
-    } else {
+    }
+    else
+    {
         Serial.println("No BLE connection active");
     }
 }

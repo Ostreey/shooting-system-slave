@@ -39,14 +39,14 @@
 
 // GPIO Pin Definitions (ESP32-S3 compatible)
 // Note: These pins are compatible with ESP32-S3 and don't conflict with strapping pins
-#define LED_BLUE_PIN 17
-#define LED_GREEN_PIN 18
-#define LED_RED_PIN 19
-#define WAKE_UP_BUTTON_PIN 15
-#define BATTERY_PIN 1          // ADC1 Channel 0 (ESP32-S3 compatible)
-#define LED_POWER_ENABLE_PIN 4
-#define CHARGING_PIN 13
-#define PIEZO_SENSOR_PIN 2     // ADC1 Channel 1 (ESP32-S3 compatible)
+#define LED_BLUE_PIN 14
+#define LED_GREEN_PIN 12
+#define LED_RED_PIN 1
+#define WAKE_UP_BUTTON_PIN 13
+#define BATTERY_PIN 3          // ADC1 Channel 0 (ESP32-S3 compatible)
+#define LED_POWER_ENABLE_PIN 21
+#define CHARGING_PIN 9
+#define PIEZO_SENSOR_PIN 8     // ADC1 Channel 1 (ESP32-S3 compatible)
 
 // Timing Constants
 #define TURN_OFF_TIME 2000              // 2 seconds for long press
