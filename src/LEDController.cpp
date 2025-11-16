@@ -1,5 +1,31 @@
 #include "LEDController.h"
 
+#include <algorithm>
+#include <esp_err.h>
+#include <esp_log.h>
+#include <driver/gpio.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
+namespace
+{
+const char *TAG = "LEDController";
+constexpr uint8_t kMaxChannelValue = 255;
+
+uint32_t toLedcValue(int value, int brightness)
+{
+    value = std::clamp(value, 0, 255);
+    brightness = std::clamp(brightness, 0, 255);
+    return static_cast<uint32_t>((value * brightness) / 255);
+}
+
+void applyDuty(ledc_channel_t channel, uint32_t duty)
+{
+    ledc_set_duty(PWM_MODE, channel, duty);
+    ledc_update_duty(PWM_MODE, channel);
+}
+}
+
 LEDController::LEDController() : brightness(255), isInitialized(false)
 {
 }
@@ -11,115 +37,123 @@ bool LEDController::begin()
         return true;
     }
 
-    // Initialize GPIO pins
-    pinMode(LED_POWER_ENABLE_PIN, OUTPUT);
-    pinMode(LED_BLUE_PIN, OUTPUT);
-    pinMode(LED_GREEN_PIN, OUTPUT);
-    pinMode(LED_RED_PIN, OUTPUT);
+    gpio_config_t io{};
+    io.intr_type = GPIO_INTR_DISABLE;
+    io.mode = GPIO_MODE_OUTPUT;
+    io.pin_bit_mask = (1ULL << LED_POWER_ENABLE_PIN) | (1ULL << LED_RED_PIN) | (1ULL << LED_GREEN_PIN) | (1ULL << LED_BLUE_PIN);
+    io.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io.pull_up_en = GPIO_PULLUP_DISABLE;
+    gpio_config(&io);
 
-    // Enable LED power
-    digitalWrite(LED_POWER_ENABLE_PIN, HIGH);
+    gpio_set_level(LED_POWER_ENABLE_PIN, 1);
+    gpio_set_level(LED_RED_PIN, 0);
+    gpio_set_level(LED_GREEN_PIN, 0);
+    gpio_set_level(LED_BLUE_PIN, 0);
 
-    // Initialize LEDs to off
-    digitalWrite(LED_BLUE_PIN, LOW);
-    digitalWrite(LED_GREEN_PIN, LOW);
-    digitalWrite(LED_RED_PIN, LOW);
+    ledc_timer_config_t timerCfg{};
+    timerCfg.speed_mode = PWM_MODE;
+    timerCfg.timer_num = PWM_TIMER;
+    timerCfg.duty_resolution = PWM_RESOLUTION;
+    timerCfg.freq_hz = PWM_FREQUENCY;
+    timerCfg.clk_cfg = LEDC_AUTO_CLK;
+    ESP_ERROR_CHECK(ledc_timer_config(&timerCfg));
 
-    // Configure PWM for LEDs
-    ledcSetup(PWM_CHANNEL_RED, PWM_FREQUENCY, PWM_RESOLUTION);
-    ledcSetup(PWM_CHANNEL_GREEN, PWM_FREQUENCY, PWM_RESOLUTION);
-    ledcSetup(PWM_CHANNEL_BLUE, PWM_FREQUENCY, PWM_RESOLUTION);
+    ledc_channel_config_t redCfg{};
+    redCfg.speed_mode = PWM_MODE;
+    redCfg.channel = PWM_CHANNEL_RED;
+    redCfg.timer_sel = PWM_TIMER;
+    redCfg.intr_type = LEDC_INTR_DISABLE;
+    redCfg.gpio_num = LED_RED_PIN;
+    redCfg.duty = 0;
+    ESP_ERROR_CHECK(ledc_channel_config(&redCfg));
 
-    // Attach PWM channels to GPIO pins
-    ledcAttachPin(LED_RED_PIN, PWM_CHANNEL_RED);
-    ledcAttachPin(LED_GREEN_PIN, PWM_CHANNEL_GREEN);
-    ledcAttachPin(LED_BLUE_PIN, PWM_CHANNEL_BLUE);
+    ledc_channel_config_t greenCfg = redCfg;
+    greenCfg.channel = PWM_CHANNEL_GREEN;
+    greenCfg.gpio_num = LED_GREEN_PIN;
+    ESP_ERROR_CHECK(ledc_channel_config(&greenCfg));
+
+    ledc_channel_config_t blueCfg = redCfg;
+    blueCfg.channel = PWM_CHANNEL_BLUE;
+    blueCfg.gpio_num = LED_BLUE_PIN;
+    ESP_ERROR_CHECK(ledc_channel_config(&blueCfg));
+
     isInitialized = true;
     return true;
 }
 
 void LEDController::enablePower(bool enable)
 {
-    digitalWrite(LED_POWER_ENABLE_PIN, enable ? HIGH : LOW);
+    gpio_set_level(LED_POWER_ENABLE_PIN, enable ? 1 : 0);
 }
 
 void LEDController::setLeds(bool on)
 {
     if (!isInitialized)
+    {
         return;
+    }
 
-    if (on)
-    {
-        ledcWrite(PWM_CHANNEL_RED, brightness);
-        ledcWrite(PWM_CHANNEL_GREEN, brightness);
-        ledcWrite(PWM_CHANNEL_BLUE, brightness);
-    }
-    else
-    {
-        ledcWrite(PWM_CHANNEL_RED, 0);
-        ledcWrite(PWM_CHANNEL_GREEN, 0);
-        ledcWrite(PWM_CHANNEL_BLUE, 0);
-    }
+    uint32_t duty = on ? toLedcValue(kMaxChannelValue, brightness) : 0;
+    applyDuty(PWM_CHANNEL_RED, duty);
+    applyDuty(PWM_CHANNEL_GREEN, duty);
+    applyDuty(PWM_CHANNEL_BLUE, duty);
 }
 
 void LEDController::setRgbColor(int red, int green, int blue)
 {
     if (!isInitialized)
+    {
         return;
+    }
 
-    // Apply global brightness to each color channel
-    int finalRed = (red * brightness) / 255;
-    int finalGreen = (green * brightness) / 255;
-    int finalBlue = (blue * brightness) / 255;
-
-    ledcWrite(PWM_CHANNEL_RED, finalRed);
-    ledcWrite(PWM_CHANNEL_GREEN, finalGreen);
-    ledcWrite(PWM_CHANNEL_BLUE, finalBlue);
-
-    Serial.printf("RGB set to: R=%d, G=%d, B=%d (brightness=%d)\n",
-                  finalRed, finalGreen, finalBlue, brightness);
+    applyDuty(PWM_CHANNEL_RED, toLedcValue(red, brightness));
+    applyDuty(PWM_CHANNEL_GREEN, toLedcValue(green, brightness));
+    applyDuty(PWM_CHANNEL_BLUE, toLedcValue(blue, brightness));
+    ESP_LOGI(TAG, "RGB set to R=%d G=%d B=%d brightness=%d", red, green, blue, brightness);
 }
 
 void LEDController::setRedChannel(int value)
 {
     if (!isInitialized)
+    {
         return;
-
-    int finalValue = (value * brightness) / 255;
-    ledcWrite(PWM_CHANNEL_RED, finalValue);
-    Serial.printf("Red channel set to: %d (brightness=%d)\n", finalValue, brightness);
+    }
+    applyDuty(PWM_CHANNEL_RED, toLedcValue(value, brightness));
+    ESP_LOGI(TAG, "Red channel=%d brightness=%d", value, brightness);
 }
 
 void LEDController::setGreenChannel(int value)
 {
     if (!isInitialized)
+    {
         return;
-
-    int finalValue = (value * brightness) / 255;
-    ledcWrite(PWM_CHANNEL_GREEN, finalValue);
-    Serial.printf("Green channel set to: %d (brightness=%d)\n", finalValue, brightness);
+    }
+    applyDuty(PWM_CHANNEL_GREEN, toLedcValue(value, brightness));
+    ESP_LOGI(TAG, "Green channel=%d brightness=%d", value, brightness);
 }
 
 void LEDController::setBlueChannel(int value)
 {
     if (!isInitialized)
+    {
         return;
-
-    int finalValue = (value * brightness) / 255;
-    ledcWrite(PWM_CHANNEL_BLUE, finalValue);
-    Serial.printf("Blue channel set to: %d (brightness=%d)\n", finalValue, brightness);
+    }
+    applyDuty(PWM_CHANNEL_BLUE, toLedcValue(value, brightness));
+    ESP_LOGI(TAG, "Blue channel=%d brightness=%d", value, brightness);
 }
 
 void LEDController::setBrightness(int value)
 {
-    brightness = constrain(value, 0, 255);
-    Serial.printf("Brightness set to: %d\n", brightness);
+    brightness = std::clamp(value, 0, 255);
+    ESP_LOGI(TAG, "Brightness=%d", brightness);
 }
 
-void LEDController::setPredefinedColor(const String &colorName)
+void LEDController::setPredefinedColor(const std::string &colorName)
 {
     if (!isInitialized)
+    {
         return;
+    }
 
     if (colorName == "red")
     {
@@ -155,52 +189,59 @@ void LEDController::setPredefinedColor(const String &colorName)
     }
     else
     {
-        Serial.printf("Unknown color: %s\n", colorName.c_str());
+        ESP_LOGW(TAG, "Unknown color %s", colorName.c_str());
     }
 }
 
 void LEDController::blinkLeds(int count, int onTime, int offTime)
 {
     if (!isInitialized)
+    {
         return;
+    }
 
-    for (int i = 0; i < count; i++)
+    for (int i = 0; i < count; ++i)
     {
         setRgbColor(0, 255, 0);
-        vTaskDelay(onTime / portTICK_PERIOD_MS);
+        vTaskDelay(pdMS_TO_TICKS(onTime));
         setRgbColor(0, 0, 0);
-        vTaskDelay(offTime / portTICK_PERIOD_MS);
+        vTaskDelay(pdMS_TO_TICKS(offTime));
     }
 }
 
 void LEDController::blinkColor(int red, int green, int blue, int count, int onTime, int offTime)
 {
     if (!isInitialized)
+    {
         return;
+    }
 
-    for (int i = 0; i < count; i++)
+    for (int i = 0; i < count; ++i)
     {
         setRgbColor(red, green, blue);
-        vTaskDelay(onTime / portTICK_PERIOD_MS);
+        vTaskDelay(pdMS_TO_TICKS(onTime));
         setRgbColor(0, 0, 0);
-        vTaskDelay(offTime / portTICK_PERIOD_MS);
+        vTaskDelay(pdMS_TO_TICKS(offTime));
     }
 }
 
 void LEDController::blinkGreen()
 {
     if (!isInitialized)
+    {
         return;
+    }
 
     setRgbColor(0, 255, 0);
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    vTaskDelay(pdMS_TO_TICKS(1000));
     setRgbColor(0, 0, 0);
 }
 
 void LEDController::turnOff()
 {
     if (!isInitialized)
+    {
         return;
-
+    }
     setRgbColor(0, 0, 0);
 }

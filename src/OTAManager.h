@@ -1,71 +1,43 @@
 #ifndef OTA_MANAGER_H
 #define OTA_MANAGER_H
 
-#include <Arduino.h>
-#include <BLEServer.h>
-#include <BLEService.h>
-#include <BLECharacteristic.h>
-#include <BLE2902.h>
-#include <Update.h>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <string>
 #include <esp_ota_ops.h>
+#include <esp_system.h>
+#include <esp_task_wdt.h>
 #include "Config.h"
 
 class OTAManager 
 {
 private:
-    BLEServer* bleServer;
-    BLEService* otaService;
-    BLECharacteristic* otaCommandChar;
-    BLECharacteristic* otaDataChar;
-    BLECharacteristic* otaStatusChar;
-    
     bool otaInProgress;
     size_t otaFirmwareSize;
     size_t otaReceivedSize;
     bool pendingRestart;
     unsigned long restartTime;
-    bool isInitialized;
+    esp_ota_handle_t otaHandle;
+    const esp_partition_t* updatePartition;
+    std::function<void(const std::string&)> statusCallback;
     
 public:
     OTAManager();
-    
-    // Initialization
-    bool begin(BLEServer* server);
-    
-    // OTA state management
     bool isOTAInProgress() const { return otaInProgress; }
     bool isPendingRestart() const { return pendingRestart; }
     unsigned long getRestartTime() const { return restartTime; }
-    
-    // Restart handling
     void checkPendingRestart();
-    
-    // Utility functions
     bool isResetAfterOTA();
-    
-    // Callback classes as inner classes
-    class OTACommandCallbacks : public BLECharacteristicCallbacks {
-    private:
-        OTAManager* otaManager;
-    public:
-        OTACommandCallbacks(OTAManager* manager) : otaManager(manager) {}
-        void onWrite(BLECharacteristic* chr) override;
-    };
-    
-    class OTADataCallbacks : public BLECharacteristicCallbacks {
-    private:
-        OTAManager* otaManager;
-    public:
-        OTADataCallbacks(OTAManager* manager) : otaManager(manager) {}
-        void onWrite(BLECharacteristic* chr) override;
-    };
-    
+    void setStatusCallback(std::function<void(const std::string&)> cb);
+    void handleCommand(const std::string& cmd);
+    void handleDataChunk(const uint8_t* data, size_t length);
+    void resetState();
+
 private:
-    // Internal helper methods
     void handleStartCommand(const std::string& cmd);
     void handleEndCommand();
-    void processDataChunk(const std::string& chunk);
-    void sendOTAStatus(const String& status);
+    void sendOTAStatus(const std::string& status);
 };
 
-#endif // OTA_MANAGER_H
+#endif
