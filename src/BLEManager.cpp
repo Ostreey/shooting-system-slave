@@ -540,6 +540,20 @@ void BLEManager::onConnectEvent(esp_ble_gatts_cb_param_t *param)
         ledController->blinkColor(255, 255, 255);
     }
 
+#if BLE_CODED_PHY_PREFERRED
+    esp_err_t phyErr = esp_ble_gap_set_preferred_default_phy(
+        ESP_BLE_GAP_PHY_CODED_PREF_MASK,
+        ESP_BLE_GAP_PHY_CODED_PREF_MASK);
+    if (phyErr == ESP_OK)
+    {
+        ESP_LOGI(TAG, "Preferred default Coded PHY set");
+    }
+    else
+    {
+        ESP_LOGW(TAG, "Failed to set preferred default PHY: %s", esp_err_to_name(phyErr));
+    }
+#endif
+
     scheduleInitialInfo();
     logBLEConnectionInfo();
     logBLEPHYInfo();
