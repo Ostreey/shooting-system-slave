@@ -132,7 +132,6 @@ private:
     DescriptorOwner pendingDescriptorOwner;
 
     bool advDataConfigured;
-    esp_ble_adv_params_t advParams;
     std::array<uint8_t, 32> serviceUuidBuffer;
 
     void handleRGBCommand(const std::string &value);

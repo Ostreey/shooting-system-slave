@@ -10,7 +10,7 @@
 
 namespace
 {
-constexpr char TAG[] = "OTAManager";
+    constexpr char TAG[] = "OTAManager";
 }
 
 OTAManager::OTAManager()
@@ -155,7 +155,7 @@ void OTAManager::handleStartCommand(const std::string &command)
 
     if (otaFirmwareSize == 0 || otaFirmwareSize > updatePartition->size)
     {
-        ESP_LOGE(TAG, "Firmware too large: %zu > %zu", otaFirmwareSize, updatePartition->size);
+        ESP_LOGE(TAG, "Firmware too large: %zu > %zu", otaFirmwareSize, (size_t)updatePartition->size);
         sendStatus("ERROR:FIRMWARE_TOO_LARGE");
         return;
     }

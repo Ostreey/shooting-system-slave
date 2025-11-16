@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <climits>
 #include <vector>
 
 #include "LEDController.h"
@@ -15,66 +16,66 @@
 
 namespace
 {
-constexpr char TAG[] = "BLEManager";
-constexpr uint16_t kMainServiceAttrCount = 12;
-constexpr uint16_t kOtaServiceAttrCount = 10;
-std::array<uint8_t, 16> uuidFromString(const std::string &uuidStr)
-{
-    std::array<uint8_t, 16> result{};
-    std::string hex;
-    hex.reserve(32);
-    for (char c : uuidStr)
+    constexpr char TAG[] = "BLEManager";
+    constexpr uint16_t kMainServiceAttrCount = 12;
+    constexpr uint16_t kOtaServiceAttrCount = 10;
+    std::array<uint8_t, 16> uuidFromString(const std::string &uuidStr)
     {
-        if (c != '-')
+        std::array<uint8_t, 16> result{};
+        std::string hex;
+        hex.reserve(32);
+        for (char c : uuidStr)
         {
-            hex.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+            if (c != '-')
+            {
+                hex.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+            }
         }
-    }
 
-    if (hex.size() != 32)
-    {
+        if (hex.size() != 32)
+        {
+            return result;
+        }
+
+        for (size_t i = 0; i < 16; ++i)
+        {
+            size_t index = (15 - i) * 2;
+            std::string byteStr = hex.substr(index, 2);
+            result[i] = static_cast<uint8_t>(std::strtoul(byteStr.c_str(), nullptr, 16));
+        }
         return result;
     }
 
-    for (size_t i = 0; i < 16; ++i)
+    void fillUuid(esp_bt_uuid_t &uuid, const std::array<uint8_t, 16> &value)
     {
-        size_t index = (15 - i) * 2;
-        std::string byteStr = hex.substr(index, 2);
-        result[i] = static_cast<uint8_t>(std::strtoul(byteStr.c_str(), nullptr, 16));
+        uuid.len = ESP_UUID_LEN_128;
+        std::memcpy(uuid.uuid.uuid128, value.data(), value.size());
     }
-    return result;
-}
 
-void fillUuid(esp_bt_uuid_t &uuid, const std::array<uint8_t, 16> &value)
-{
-    uuid.len = ESP_UUID_LEN_128;
-    std::memcpy(uuid.uuid.uuid128, value.data(), value.size());
-}
+    bool uuidMatches(const esp_bt_uuid_t &uuid, const std::array<uint8_t, 16> &value)
+    {
+        return uuid.len == ESP_UUID_LEN_128 &&
+               std::memcmp(uuid.uuid.uuid128, value.data(), value.size()) == 0;
+    }
 
-bool uuidMatches(const esp_bt_uuid_t &uuid, const std::array<uint8_t, 16> &value)
-{
-    return uuid.len == ESP_UUID_LEN_128 &&
-           std::memcmp(uuid.uuid.uuid128, value.data(), value.size()) == 0;
-}
+    const std::array<uint8_t, 16> kServiceUuid = uuidFromString(SERVICE_UUID);
+    const std::array<uint8_t, 16> kPiezoCharUuid = uuidFromString(CHARACTERISTIC);
+    const std::array<uint8_t, 16> kBatteryCharUuid = uuidFromString(BATTERY_CHARACTERISTIC);
+    const std::array<uint8_t, 16> kFirmwareCharUuid = uuidFromString(FIRMWARE_VERSION_CHARACTERISTIC);
+    const std::array<uint8_t, 16> kOtaServiceUuid = uuidFromString(OTA_SERVICE_UUID);
+    const std::array<uint8_t, 16> kOtaCommandUuid = uuidFromString(OTA_COMMAND_CHAR_UUID);
+    const std::array<uint8_t, 16> kOtaDataUuid = uuidFromString(OTA_DATA_CHAR_UUID);
+    const std::array<uint8_t, 16> kOtaStatusUuid = uuidFromString(OTA_STATUS_CHAR_UUID);
 
-const std::array<uint8_t, 16> kServiceUuid = uuidFromString(SERVICE_UUID);
-const std::array<uint8_t, 16> kPiezoCharUuid = uuidFromString(CHARACTERISTIC);
-const std::array<uint8_t, 16> kBatteryCharUuid = uuidFromString(BATTERY_CHARACTERISTIC);
-const std::array<uint8_t, 16> kFirmwareCharUuid = uuidFromString(FIRMWARE_VERSION_CHARACTERISTIC);
-const std::array<uint8_t, 16> kOtaServiceUuid = uuidFromString(OTA_SERVICE_UUID);
-const std::array<uint8_t, 16> kOtaCommandUuid = uuidFromString(OTA_COMMAND_CHAR_UUID);
-const std::array<uint8_t, 16> kOtaDataUuid = uuidFromString(OTA_DATA_CHAR_UUID);
-const std::array<uint8_t, 16> kOtaStatusUuid = uuidFromString(OTA_STATUS_CHAR_UUID);
-
-esp_attr_value_t descriptorValue()
-{
-    static uint8_t ccc[2] = {0x00, 0x00};
-    esp_attr_value_t value = {
-        .attr_max_len = sizeof(ccc),
-        .attr_len = sizeof(ccc),
-        .attr_value = ccc};
-    return value;
-}
+    esp_attr_value_t descriptorValue()
+    {
+        static uint8_t ccc[2] = {0x00, 0x00};
+        esp_attr_value_t value = {
+            .attr_max_len = sizeof(ccc),
+            .attr_len = sizeof(ccc),
+            .attr_value = ccc};
+        return value;
+    }
 }
 
 BLEManager *BLEManager::instance = nullptr;
@@ -89,10 +90,6 @@ BLEManager::BLEManager(LEDController *leds, PowerManager *power, OTAManager *ota
       mainGattIf(ESP_GATT_IF_NONE),
       otaGattIf(ESP_GATT_IF_NONE),
       connId(0),
-      piezoNotifyEnabled(false),
-      batteryNotifyEnabled(false),
-      firmwareNotifyEnabled(false),
-      otaStatusNotifyEnabled(false),
       ledStatusTaskHandle(nullptr),
       pendingDescriptorOwner(DescriptorOwner::None),
       advDataConfigured(false)
@@ -145,19 +142,18 @@ void BLEManager::configureAdvertising()
     adv_data.set_scan_rsp = false;
     adv_data.include_name = true;
     adv_data.include_txpower = true;
+    adv_data.min_interval = 0x0006;
+    adv_data.max_interval = 0x0010;
+    adv_data.appearance = 0;
+    adv_data.manufacturer_len = 0;
+    adv_data.p_manufacturer_data = nullptr;
+    adv_data.service_data_len = 0;
+    adv_data.p_service_data = nullptr;
+    adv_data.service_uuid_len = 0;
+    adv_data.p_service_uuid = nullptr;
     adv_data.flag = ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT;
-    adv_data.service_uuid_len = serviceUuidBuffer.size();
-    adv_data.p_service_uuid128 = serviceUuidBuffer.data();
 
     ESP_ERROR_CHECK(esp_ble_gap_config_adv_data(&adv_data));
-
-    advParams = {};
-    advParams.adv_int_min = 0x20;
-    advParams.adv_int_max = 0x40;
-    advParams.adv_type = ADV_TYPE_IND;
-    advParams.own_addr_type = BLE_ADDR_TYPE_PUBLIC;
-    advParams.channel_map = ADV_CHNL_ALL;
-    advParams.adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY;
 }
 
 bool BLEManager::begin()
@@ -179,10 +175,6 @@ bool BLEManager::begin()
 
     configureAdvertising();
 
-    esp_ble_gap_set_prefered_default_phy(
-        ESP_BLE_GAP_PHY_CODED_PREF_MASK | ESP_BLE_GAP_PHY_1M_PREF_MASK,
-        ESP_BLE_GAP_PHY_CODED_PREF_MASK | ESP_BLE_GAP_PHY_1M_PREF_MASK);
-
     if (otaManager)
     {
         otaManager->begin();
@@ -201,7 +193,23 @@ void BLEManager::startAdvertising()
 {
     if (advDataConfigured)
     {
-        esp_err_t err = esp_ble_gap_start_advertising(&advParams);
+        esp_ble_adv_params_t params = {};
+        params.adv_int_min = 0x0100;
+        params.adv_int_max = 0x0100;
+        params.adv_type = ADV_TYPE_IND;
+        params.own_addr_type = BLE_ADDR_TYPE_PUBLIC;
+        params.channel_map = ADV_CHNL_ALL;
+        params.adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY;
+
+        ESP_LOGI(TAG, "Starting advertising: int_min=0x%04X int_max=0x%04X type=%d own_addr_type=%d peer_addr_type=%d channel_map=0x%02X",
+                 params.adv_int_min,
+                 params.adv_int_max,
+                 params.adv_type,
+                 params.own_addr_type,
+                 params.peer_addr_type,
+                 params.channel_map);
+
+        esp_err_t err = esp_ble_gap_start_advertising(&params);
         if (err != ESP_OK)
         {
             ESP_LOGE(TAG, "Failed to start advertising: %s", esp_err_to_name(err));
@@ -250,9 +258,9 @@ void BLEManager::handleGapEvent(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_par
         break;
     case ESP_GAP_BLE_PHY_UPDATE_COMPLETE_EVT:
         ESP_LOGI(TAG, "PHY update: tx=%d rx=%d status=%d",
-                 param->phy_update_cmpl.tx_phy,
-                 param->phy_update_cmpl.rx_phy,
-                 param->phy_update_cmpl.status);
+                 param->phy_update.tx_phy,
+                 param->phy_update.rx_phy,
+                 param->phy_update.status);
         break;
     default:
         break;
@@ -363,6 +371,17 @@ void BLEManager::onCreateService(esp_ble_gatts_cb_param_t *param)
             &piezoVal,
             nullptr));
 
+        esp_bt_uuid_t piezoDescrUuid = {};
+        piezoDescrUuid.len = ESP_UUID_LEN_16;
+        piezoDescrUuid.uuid.uuid16 = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
+        esp_attr_value_t piezoDescrVal = descriptorValue();
+        ESP_ERROR_CHECK(esp_ble_gatts_add_char_descr(
+            mainHandles.serviceHandle,
+            &piezoDescrUuid,
+            ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+            &piezoDescrVal,
+            nullptr));
+
         esp_bt_uuid_t batteryUuid;
         fillUuid(batteryUuid, kBatteryCharUuid);
         uint8_t batteryInit[4] = {'0', 0};
@@ -378,6 +397,17 @@ void BLEManager::onCreateService(esp_ble_gatts_cb_param_t *param)
             &batteryVal,
             nullptr));
 
+        esp_bt_uuid_t batteryDescrUuid = {};
+        batteryDescrUuid.len = ESP_UUID_LEN_16;
+        batteryDescrUuid.uuid.uuid16 = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
+        esp_attr_value_t batteryDescrVal = descriptorValue();
+        ESP_ERROR_CHECK(esp_ble_gatts_add_char_descr(
+            mainHandles.serviceHandle,
+            &batteryDescrUuid,
+            ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+            &batteryDescrVal,
+            nullptr));
+
         esp_bt_uuid_t firmwareUuid;
         fillUuid(firmwareUuid, kFirmwareCharUuid);
         esp_attr_value_t firmwareVal = {
@@ -390,6 +420,17 @@ void BLEManager::onCreateService(esp_ble_gatts_cb_param_t *param)
             ESP_GATT_PERM_READ,
             ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY,
             &firmwareVal,
+            nullptr));
+
+        esp_bt_uuid_t firmwareDescrUuid = {};
+        firmwareDescrUuid.len = ESP_UUID_LEN_16;
+        firmwareDescrUuid.uuid.uuid16 = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
+        esp_attr_value_t firmwareDescrVal = descriptorValue();
+        ESP_ERROR_CHECK(esp_ble_gatts_add_char_descr(
+            mainHandles.serviceHandle,
+            &firmwareDescrUuid,
+            ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+            &firmwareDescrVal,
             nullptr));
     }
     else if (uuidMatches(param->create.service_id.id.uuid, kOtaServiceUuid))
@@ -438,76 +479,53 @@ void BLEManager::onAddCharacteristic(esp_ble_gatts_cb_param_t *param)
     if (uuidMatches(param->add_char.char_uuid, kPiezoCharUuid))
     {
         mainHandles.piezoCharHandle = param->add_char.attr_handle;
-        pendingDescriptorOwner = DescriptorOwner::Piezo;
     }
     else if (uuidMatches(param->add_char.char_uuid, kBatteryCharUuid))
     {
         mainHandles.batteryCharHandle = param->add_char.attr_handle;
-        pendingDescriptorOwner = DescriptorOwner::Battery;
     }
     else if (uuidMatches(param->add_char.char_uuid, kFirmwareCharUuid))
     {
         mainHandles.firmwareCharHandle = param->add_char.attr_handle;
-        pendingDescriptorOwner = DescriptorOwner::Firmware;
     }
     else if (uuidMatches(param->add_char.char_uuid, kOtaCommandUuid))
     {
         otaHandles.commandCharHandle = param->add_char.attr_handle;
-        pendingDescriptorOwner = DescriptorOwner::None;
     }
     else if (uuidMatches(param->add_char.char_uuid, kOtaDataUuid))
     {
         otaHandles.dataCharHandle = param->add_char.attr_handle;
-        pendingDescriptorOwner = DescriptorOwner::None;
     }
     else if (uuidMatches(param->add_char.char_uuid, kOtaStatusUuid))
     {
         otaHandles.statusCharHandle = param->add_char.attr_handle;
-        pendingDescriptorOwner = DescriptorOwner::OtaStatus;
-    }
-    else
-    {
-        pendingDescriptorOwner = DescriptorOwner::None;
-    }
-
-    if (pendingDescriptorOwner != DescriptorOwner::None)
-    {
-        esp_bt_uuid_t descrUuid = {};
-        descrUuid.len = ESP_UUID_LEN_16;
-        descrUuid.uuid.uuid16 = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
-        esp_attr_value_t descrVal = descriptorValue();
-        uint16_t serviceHandle = (pendingDescriptorOwner == DescriptorOwner::OtaStatus)
-                                     ? otaHandles.serviceHandle
-                                     : mainHandles.serviceHandle;
-        ESP_ERROR_CHECK(esp_ble_gatts_add_char_descr(
-            serviceHandle,
-            &descrUuid,
-            ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
-            &descrVal,
-            nullptr));
     }
 }
 
 void BLEManager::onAddDescriptor(esp_ble_gatts_cb_param_t *param)
 {
-    switch (pendingDescriptorOwner)
+    if (param->add_char_descr.service_handle == mainHandles.serviceHandle)
     {
-    case DescriptorOwner::Piezo:
-        mainHandles.piezoCccHandle = param->add_char_descr.attr_handle;
-        break;
-    case DescriptorOwner::Battery:
-        mainHandles.batteryCccHandle = param->add_char_descr.attr_handle;
-        break;
-    case DescriptorOwner::Firmware:
-        mainHandles.firmwareCccHandle = param->add_char_descr.attr_handle;
-        break;
-    case DescriptorOwner::OtaStatus:
-        otaHandles.statusCccHandle = param->add_char_descr.attr_handle;
-        break;
-    default:
-        break;
+        if (mainHandles.piezoCccHandle == 0)
+        {
+            mainHandles.piezoCccHandle = param->add_char_descr.attr_handle;
+        }
+        else if (mainHandles.batteryCccHandle == 0)
+        {
+            mainHandles.batteryCccHandle = param->add_char_descr.attr_handle;
+        }
+        else if (mainHandles.firmwareCccHandle == 0)
+        {
+            mainHandles.firmwareCccHandle = param->add_char_descr.attr_handle;
+        }
     }
-    pendingDescriptorOwner = DescriptorOwner::None;
+    else if (param->add_char_descr.service_handle == otaHandles.serviceHandle)
+    {
+        if (otaHandles.statusCccHandle == 0)
+        {
+            otaHandles.statusCccHandle = param->add_char_descr.attr_handle;
+        }
+    }
 }
 
 void BLEManager::onConnectEvent(esp_ble_gatts_cb_param_t *param)
@@ -530,11 +548,6 @@ void BLEManager::onConnectEvent(esp_ble_gatts_cb_param_t *param)
 void BLEManager::onDisconnectEvent()
 {
     deviceConnected = false;
-    piezoNotifyEnabled = false;
-    batteryNotifyEnabled = false;
-    firmwareNotifyEnabled = false;
-    otaStatusNotifyEnabled = false;
-
     if (powerManager)
     {
         powerManager->setConnected(false);
@@ -585,22 +598,6 @@ void BLEManager::onReadEvent(esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *p
 
 void BLEManager::updateNotifyState(uint16_t handle, bool enabled)
 {
-    if (handle == mainHandles.piezoCccHandle)
-    {
-        piezoNotifyEnabled = enabled;
-    }
-    else if (handle == mainHandles.batteryCccHandle)
-    {
-        batteryNotifyEnabled = enabled;
-    }
-    else if (handle == mainHandles.firmwareCccHandle)
-    {
-        firmwareNotifyEnabled = enabled;
-    }
-    else if (handle == otaHandles.statusCccHandle)
-    {
-        otaStatusNotifyEnabled = enabled;
-    }
 }
 
 void BLEManager::onWriteEvent(esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
@@ -632,15 +629,6 @@ void BLEManager::onWriteEvent(esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *
         {
             otaManager->handleDataChunk(param->write.value, param->write.len);
         }
-    }
-    else if (param->write.handle == mainHandles.piezoCccHandle ||
-             param->write.handle == mainHandles.batteryCccHandle ||
-             param->write.handle == mainHandles.firmwareCccHandle ||
-             param->write.handle == otaHandles.statusCccHandle)
-    {
-        bool enabled = param->write.len >= 2 &&
-                       (param->write.value[0] & 0x01);
-        updateNotifyState(param->write.handle, enabled);
     }
 }
 
@@ -709,7 +697,7 @@ void BLEManager::processCommand(const std::string &value)
 
 void BLEManager::sendPiezoValue(int piezoValue)
 {
-    if (!deviceConnected || !piezoNotifyEnabled || mainHandles.piezoCharHandle == 0)
+    if (!deviceConnected || mainHandles.piezoCharHandle == 0)
     {
         return;
     }
@@ -735,12 +723,12 @@ void BLEManager::sendBatteryLevel(int percentage)
                                      reinterpret_cast<const uint8_t *>(lastBatteryValue.c_str()));
     }
 
-    if (deviceConnected && batteryNotifyEnabled && mainHandles.batteryCharHandle)
+    if (deviceConnected && mainHandles.batteryCharHandle)
     {
         esp_ble_gatts_send_indicate(mainGattIf, connId,
                                     mainHandles.batteryCharHandle,
                                     lastBatteryValue.size(),
-                                    reinterpret_cast<const uint8_t *>(lastBatteryValue.c_str()),
+                                    const_cast<uint8_t *>(reinterpret_cast<const uint8_t *>(lastBatteryValue.c_str())),
                                     false);
     }
 }
@@ -754,12 +742,12 @@ void BLEManager::sendFirmwareVersion()
                                      lastFirmwareValue.size(),
                                      reinterpret_cast<const uint8_t *>(lastFirmwareValue.c_str()));
     }
-    if (deviceConnected && firmwareNotifyEnabled && mainHandles.firmwareCharHandle)
+    if (deviceConnected && mainHandles.firmwareCharHandle)
     {
         esp_ble_gatts_send_indicate(mainGattIf, connId,
                                     mainHandles.firmwareCharHandle,
                                     lastFirmwareValue.size(),
-                                    reinterpret_cast<const uint8_t *>(lastFirmwareValue.c_str()),
+                                    const_cast<uint8_t *>(reinterpret_cast<const uint8_t *>(lastFirmwareValue.c_str())),
                                     false);
     }
 }
@@ -778,7 +766,7 @@ void BLEManager::sendOtaStatus(const std::string &status)
         esp_ble_gatts_send_indicate(otaGattIf, connId,
                                     otaHandles.statusCharHandle,
                                     lastOtaStatus.size(),
-                                    reinterpret_cast<const uint8_t *>(lastOtaStatus.c_str()),
+                                    const_cast<uint8_t *>(reinterpret_cast<const uint8_t *>(lastOtaStatus.c_str())),
                                     false);
     }
 }
@@ -794,14 +782,17 @@ BLECommandData BLEManager::parseCommand(const std::string &value)
 
     auto parseInt = [](const std::string &text) -> int
     {
-        try
-        {
-            return std::stoi(text);
-        }
-        catch (...)
+        char *end = nullptr;
+        long value = std::strtol(text.c_str(), &end, 10);
+        if (end == text.c_str())
         {
             return 0;
         }
+        if (value < INT_MIN)
+            return INT_MIN;
+        if (value > INT_MAX)
+            return INT_MAX;
+        return static_cast<int>(value);
     };
 
     if (value.rfind("rgb:", 0) == 0)
@@ -867,15 +858,27 @@ bool BLEManager::parseRgbValues(const std::string &rgbStr, int &red, int &green,
         return false;
     }
 
-    try
     {
-        red = std::stoi(rgbStr.substr(0, firstComma));
-        green = std::stoi(rgbStr.substr(firstComma + 1, secondComma - firstComma - 1));
-        blue = std::stoi(rgbStr.substr(secondComma + 1));
-    }
-    catch (...)
-    {
-        return false;
+        std::string rStr = rgbStr.substr(0, firstComma);
+        std::string gStr = rgbStr.substr(firstComma + 1, secondComma - firstComma - 1);
+        std::string bStr = rgbStr.substr(secondComma + 1);
+
+        char *end = nullptr;
+        long r = std::strtol(rStr.c_str(), &end, 10);
+        if (end == rStr.c_str())
+            return false;
+        end = nullptr;
+        long g = std::strtol(gStr.c_str(), &end, 10);
+        if (end == gStr.c_str())
+            return false;
+        end = nullptr;
+        long b = std::strtol(bStr.c_str(), &end, 10);
+        if (end == bStr.c_str())
+            return false;
+
+        red = static_cast<int>(r);
+        green = static_cast<int>(g);
+        blue = static_cast<int>(b);
     }
 
     red = clamp_value(red, 0, 255);
