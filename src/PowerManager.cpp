@@ -1,10 +1,36 @@
 #include "PowerManager.h"
+
 #include "LEDController.h"
+#include "driver/gpio.h"
 #include "driver/rtc_io.h"
+#include "esp_log.h"
+#include "esp_sleep.h"
+#include "esp_system.h"
+#include "esp_task_wdt.h"
+
+namespace
+{
+constexpr char TAG[] = "PowerManager";
+
+void configureInputPin(gpio_num_t pin, bool pullup)
+{
+    gpio_config_t ioConfig = {};
+    ioConfig.intr_type = GPIO_INTR_DISABLE;
+    ioConfig.mode = GPIO_MODE_INPUT;
+    ioConfig.pin_bit_mask = 1ULL << pin;
+    ioConfig.pull_down_en = pullup ? GPIO_PULLDOWN_DISABLE : GPIO_PULLDOWN_ENABLE;
+    ioConfig.pull_up_en = pullup ? GPIO_PULLUP_ENABLE : GPIO_PULLUP_DISABLE;
+    gpio_config(&ioConfig);
+}
+}
 
 PowerManager::PowerManager(LEDController *leds)
-    : ledController(leds), batteryTaskHandle(nullptr), lastDisconnectTime(0),
-      isGoingToSleep(false), justWokenUp(false), isInitialized(false),
+    : ledController(leds),
+      batteryTaskHandle(nullptr),
+      lastDisconnectTimeMs(0),
+      isGoingToSleep(false),
+      justWokenUp(false),
+      isInitialized(false),
       batteryCallback(nullptr)
 {
 }
@@ -16,48 +42,41 @@ bool PowerManager::begin()
         return true;
     }
 
-    // Initialize GPIO pins
-    pinMode(WAKE_UP_BUTTON_PIN, INPUT_PULLUP);
-    gpio_set_pull_mode((gpio_num_t)WAKE_UP_BUTTON_PIN, GPIO_PULLUP_ONLY);
-    gpio_set_direction((gpio_num_t)WAKE_UP_BUTTON_PIN, GPIO_MODE_INPUT);
-    pinMode(BATTERY_PIN, INPUT);
-    pinMode(CHARGING_PIN, INPUT_PULLUP);
+    configureInputPin(static_cast<gpio_num_t>(WAKE_UP_BUTTON_PIN), true);
+    configureInputPin(static_cast<gpio_num_t>(CHARGING_PIN), true);
 
-    // ADC calibration
+    adc1_config_width(ADC_WIDTH_BIT_12);
+    adc1_config_channel_atten(BATTERY_ADC_CHANNEL, ADC_ATTEN);
+    adc1_config_channel_atten(PIEZO_ADC_CHANNEL, ADC_ATTEN);
     esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN, ADC_WIDTH_BIT_12, DEFAULT_VREF, &adcChars);
 
-    // Initialize disconnect timer to start auto-sleep countdown from boot
-    lastDisconnectTime = millis();
-
+    lastDisconnectTimeMs = millis64();
     isInitialized = true;
+
+    ESP_LOGI(TAG, "Power manager initialized");
     return true;
 }
 
 int PowerManager::getBatteryPercentage()
 {
     if (!isInitialized)
-        return 100;
-
-    // Read multiple samples and average them
-    uint32_t adcReading = 0;
-    for (int i = 0; i < ADC_SAMPLES; i++)
     {
-        adcReading += analogRead(BATTERY_PIN);
+        return 100;
+    }
+
+    uint32_t adcReading = 0;
+    for (int i = 0; i < ADC_SAMPLES; ++i)
+    {
+        adcReading += adc1_get_raw(BATTERY_ADC_CHANNEL);
     }
     adcReading /= ADC_SAMPLES;
 
-    // Convert to voltage using calibration
     uint32_t voltageMv = esp_adc_cal_raw_to_voltage(adcReading, &adcChars);
-    float voltage = voltageMv / 1000.0; // Convert to volts
-
-    // Convert to actual battery voltage (multiply by 1.5 due to voltage divider)
-    float batteryVoltage = voltage * 1.5;
-
-    // Convert to percentage (assuming 4.2V is 100% and 3.6V is 0%)
-    int percentage = map(batteryVoltage * 100, BATTERY_MIN_VOLTAGE, BATTERY_MAX_VOLTAGE, 0, 100);
-    percentage = constrain(percentage, 0, 100);
-
-    return percentage;
+    float voltage = static_cast<float>(voltageMv) / 1000.0f;
+    float batteryVoltage = voltage * 1.5f;
+    int percentage = map_value(static_cast<int>(batteryVoltage * 100.0f),
+                               BATTERY_MIN_VOLTAGE, BATTERY_MAX_VOLTAGE, 0, 100);
+    return clamp_value(percentage, 0, 100);
 }
 
 void PowerManager::setBatteryCallback(void (*callback)(int))
@@ -67,99 +86,80 @@ void PowerManager::setBatteryCallback(void (*callback)(int))
 
 bool PowerManager::isCharging()
 {
-    return digitalRead(CHARGING_PIN) == LOW;
+    return gpio_get_level(static_cast<gpio_num_t>(CHARGING_PIN)) == 0;
 }
 
 void PowerManager::goToDeepSleep(bool skipLedBlink)
 {
-    isGoingToSleep = true;
+    if (isGoingToSleep)
+    {
+        return;
+    }
 
-    // DISABLE WATCHDOG FIRST - before any delays or LED operations
+    isGoingToSleep = true;
     esp_task_wdt_deinit();
 
     if (!skipLedBlink && ledController)
     {
-        // Use LED controller for white blinking when powering off
         ledController->blinkColor(255, 255, 255, 3, 200, 200);
-
-        // Small delay to show the device is turning off
-        delay(500);
+        delay_ms(500);
     }
 
-    Serial.println("Going to deep sleep...");
+    ESP_LOGI(TAG, "Preparing for deep sleep");
 
-    // Configure GPIO15 properly before sleep
-    // Set as input with internal pull-up to prevent floating state
-    gpio_set_direction((gpio_num_t)WAKE_UP_BUTTON_PIN, GPIO_MODE_INPUT);
-    gpio_set_pull_mode((gpio_num_t)WAKE_UP_BUTTON_PIN, GPIO_PULLUP_ONLY);
-    rtc_gpio_init((gpio_num_t)WAKE_UP_BUTTON_PIN);
-    rtc_gpio_set_direction((gpio_num_t)WAKE_UP_BUTTON_PIN, RTC_GPIO_MODE_INPUT_ONLY);
-    rtc_gpio_pulldown_dis((gpio_num_t)WAKE_UP_BUTTON_PIN);
-    rtc_gpio_pullup_en((gpio_num_t)WAKE_UP_BUTTON_PIN);
+    configureInputPin(static_cast<gpio_num_t>(WAKE_UP_BUTTON_PIN), true);
+    rtc_gpio_init(static_cast<gpio_num_t>(WAKE_UP_BUTTON_PIN));
+    rtc_gpio_set_direction(static_cast<gpio_num_t>(WAKE_UP_BUTTON_PIN), RTC_GPIO_MODE_INPUT_ONLY);
+    rtc_gpio_pulldown_dis(static_cast<gpio_num_t>(WAKE_UP_BUTTON_PIN));
+    rtc_gpio_pullup_en(static_cast<gpio_num_t>(WAKE_UP_BUTTON_PIN));
 
-    // Add small delay to stabilize GPIO state
-    delay(100);
+    delay_ms(100);
 
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-    esp_err_t ext0Result = esp_sleep_enable_ext0_wakeup((gpio_num_t)WAKE_UP_BUTTON_PIN, 0);
+    esp_err_t ext0Result = esp_sleep_enable_ext0_wakeup(static_cast<gpio_num_t>(WAKE_UP_BUTTON_PIN), 0);
     if (ext0Result != ESP_OK)
     {
-        Serial.printf("ext0 wake-up failed, trying ext1: %s\n", esp_err_to_name(ext0Result));
-        esp_sleep_enable_ext1_wakeup((1ULL << WAKE_UP_BUTTON_PIN), ESP_EXT1_WAKEUP_ANY_HIGH);
+        ESP_LOGW(TAG, "ext0 wake-up failed (%s), configuring ext1", esp_err_to_name(ext0Result));
+        esp_sleep_enable_ext1_wakeup(1ULL << WAKE_UP_BUTTON_PIN, ESP_EXT1_WAKEUP_ANY_HIGH);
     }
 
-    Serial.println("Deep sleep configuration complete");
-    Serial.flush(); // Ensure all serial data is sent before sleep
-
-    // Final delay to ensure all operations are complete
-    delay(50);
-
+    ESP_LOGI(TAG, "Deep sleep configuration complete");
+    fflush(stdout);
+    delay_ms(50);
     esp_deep_sleep_start();
 }
 
 bool PowerManager::validateWakeUp()
 {
-    Serial.println("Validating wake-up - button must be held for 2 seconds...");
+    ESP_LOGI(TAG, "Validating wake-up: button must stay pressed for %d ms", WAKE_UP_HOLD_TIME);
 
-    // Ensure GPIO15 is properly configured for reading
-    gpio_set_direction((gpio_num_t)WAKE_UP_BUTTON_PIN, GPIO_MODE_INPUT);
-    gpio_set_pull_mode((gpio_num_t)WAKE_UP_BUTTON_PIN, GPIO_PULLUP_ONLY);
-    rtc_gpio_init((gpio_num_t)WAKE_UP_BUTTON_PIN);
-    rtc_gpio_set_direction((gpio_num_t)WAKE_UP_BUTTON_PIN, RTC_GPIO_MODE_INPUT_ONLY);
-    rtc_gpio_pulldown_dis((gpio_num_t)WAKE_UP_BUTTON_PIN);
-    rtc_gpio_pullup_en((gpio_num_t)WAKE_UP_BUTTON_PIN);
+    configureInputPin(static_cast<gpio_num_t>(WAKE_UP_BUTTON_PIN), true);
+    rtc_gpio_init(static_cast<gpio_num_t>(WAKE_UP_BUTTON_PIN));
+    rtc_gpio_set_direction(static_cast<gpio_num_t>(WAKE_UP_BUTTON_PIN), RTC_GPIO_MODE_INPUT_ONLY);
+    rtc_gpio_pulldown_dis(static_cast<gpio_num_t>(WAKE_UP_BUTTON_PIN));
+    rtc_gpio_pullup_en(static_cast<gpio_num_t>(WAKE_UP_BUTTON_PIN));
 
-    // Small delay to stabilize GPIO state
-    delay(100);
+    delay_ms(100);
 
-    // Check if button is still pressed when we start validation
-    if (digitalRead(WAKE_UP_BUTTON_PIN) != LOW)
+    if (gpio_get_level(static_cast<gpio_num_t>(WAKE_UP_BUTTON_PIN)) != 0)
     {
-        Serial.println("Button not pressed during validation - going back to sleep");
+        ESP_LOGW(TAG, "Button released before validation");
         return false;
     }
 
-    unsigned long startTime = millis();
-
-    while ((millis() - startTime) < WAKE_UP_HOLD_TIME)
+    uint64_t startTime = millis64();
+    while ((millis64() - startTime) < WAKE_UP_HOLD_TIME)
     {
-        // Check if button was released during the hold period
-        if (digitalRead(WAKE_UP_BUTTON_PIN) != LOW)
+        if (gpio_get_level(static_cast<gpio_num_t>(WAKE_UP_BUTTON_PIN)) != 0)
         {
-            Serial.println("Button released before 2 seconds - going back to sleep");
+            ESP_LOGW(TAG, "Button released before hold interval completed");
             return false;
         }
-
-        delay(50); // Small delay to prevent excessive polling
+        delay_ms(50);
     }
 
-    // If we reach here, button was held for full 2 seconds
-    Serial.println("Wake-up validated - button held for 2 seconds");
-
-    // Set flag to indicate we just woke up successfully
-    // This will prevent turn-off detection for the current button press
     justWokenUp = true;
-
+    ESP_LOGI(TAG, "Wake-up validated");
     return true;
 }
 
@@ -167,23 +167,26 @@ void PowerManager::setConnected(bool connected)
 {
     if (connected)
     {
-        lastDisconnectTime = 0; // Reset disconnect timer when connected
+        lastDisconnectTimeMs = 0;
     }
     else
     {
-        lastDisconnectTime = millis(); // Record disconnection time
+        lastDisconnectTimeMs = millis64();
     }
 }
 
 bool PowerManager::shouldAutoSleep()
 {
-    return (lastDisconnectTime > 0 &&
-            (millis() - lastDisconnectTime) >= AUTO_SLEEP_TIME);
+    if (lastDisconnectTimeMs == 0)
+    {
+        return false;
+    }
+    return (millis64() - lastDisconnectTimeMs) >= AUTO_SLEEP_TIME;
 }
 
 bool PowerManager::isButtonPressed()
 {
-    return digitalRead(WAKE_UP_BUTTON_PIN) == LOW;
+    return gpio_get_level(static_cast<gpio_num_t>(WAKE_UP_BUTTON_PIN)) == 0;
 }
 
 void PowerManager::startBatteryMonitoringTask()
@@ -193,11 +196,11 @@ void PowerManager::startBatteryMonitoringTask()
         xTaskCreatePinnedToCore(
             batteryMonitorTaskFunction,
             "BatteryMonitor",
-            2048,
-            this, // Pass this instance as parameter
+            4096,
+            this,
             2,
             &batteryTaskHandle,
-            APP_CPU_NUM);
+            app_cpu());
     }
 }
 
@@ -210,43 +213,37 @@ void PowerManager::stopBatteryMonitoringTask()
     }
 }
 
-// Static task function
 void PowerManager::batteryMonitorTaskFunction(void *pvParameters)
 {
-    PowerManager *powerManager = static_cast<PowerManager *>(pvParameters);
+    auto *powerManager = static_cast<PowerManager *>(pvParameters);
 
     for (;;)
     {
         int percentage = powerManager->getBatteryPercentage();
 
-        // Send battery level through callback if set
         if (powerManager->batteryCallback)
         {
             powerManager->batteryCallback(percentage);
         }
 
-        // Check for charging - if charging pin goes low, charger is working
         if (powerManager->isCharging())
         {
-            Serial.println("Charging detected, going to sleep");
+            ESP_LOGI(TAG, "Charging detected, entering deep sleep");
             powerManager->goToDeepSleep(true);
         }
 
-        // Check for low battery (5% threshold for normal operation)
-        // Note: BLE operation requires higher voltage (10% threshold checked in main.cpp)
         if (percentage < BATTERY_LOW_THRESHOLD)
         {
-            Serial.println("Battery low, going to sleep");
+            ESP_LOGW(TAG, "Battery low (%d%%), entering deep sleep", percentage);
             powerManager->goToDeepSleep();
         }
 
-        // Check for auto-sleep after timeout when not connected
         if (powerManager->shouldAutoSleep())
         {
-            Serial.println("No connection for 5 minutes, going to sleep");
+            ESP_LOGI(TAG, "Auto-sleep timeout reached, entering deep sleep");
             powerManager->goToDeepSleep();
         }
 
-        vTaskDelay(30000 / portTICK_PERIOD_MS); // 30 seconds delay
+        vTaskDelay(pdMS_TO_TICKS(30000));
     }
 }

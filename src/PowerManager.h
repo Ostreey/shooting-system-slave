@@ -1,12 +1,18 @@
 #ifndef POWER_MANAGER_H
 #define POWER_MANAGER_H
 
-#include <Arduino.h>
-#include <esp_adc_cal.h>
-#include <esp_sleep.h>
-#include <esp_task_wdt.h>
-#include <esp_ota_ops.h>
+#include <cstdint>
+
 #include "Config.h"
+#include "IdfCompat.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+extern "C"
+{
+#include "driver/adc.h"
+#include "esp_adc_cal.h"
+}
 
 class LEDController; // Forward declaration
 
@@ -16,7 +22,7 @@ private:
     LEDController* ledController;
     esp_adc_cal_characteristics_t adcChars;
     TaskHandle_t batteryTaskHandle;
-    unsigned long lastDisconnectTime;
+    uint64_t lastDisconnectTimeMs;
     bool isGoingToSleep;
     bool justWokenUp;
     bool isInitialized;

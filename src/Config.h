@@ -1,6 +1,8 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#include "driver/adc.h"
+
 // Firmware version
 #define FIRMWARE_VERSION "1.0.3"
 
@@ -27,8 +29,10 @@
 // ESP32-S3 ADC Pins: ADC1 (GPIO1-10), ADC2 (GPIO11-20, shared with WiFi)
 // Using ADC1 pins for better compatibility when WiFi is active
 #define DEFAULT_VREF 1100         // Default reference voltage in mV
-#define ADC_SAMPLES 64            // Number of samples for averaging
-#define ADC_ATTEN ADC_ATTEN_DB_11 // 11dB attenuation for 0-3.3V range
+#define ADC_SAMPLES 64
+#define ADC_ATTEN ADC_ATTEN_DB_11
+#define BATTERY_ADC_CHANNEL ADC1_CHANNEL_2
+#define PIEZO_ADC_CHANNEL ADC1_CHANNEL_7
 
 // PWM Configuration
 #define PWM_FREQUENCY 5000
