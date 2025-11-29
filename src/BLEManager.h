@@ -24,6 +24,7 @@ enum class BLECommand
     SET_RED,
     SET_GREEN,
     SET_BLUE,
+    SET_AUTO_OFF,
     BLINK_COLOR,
 };
 

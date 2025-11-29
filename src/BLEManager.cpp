@@ -1,7 +1,8 @@
-#include "BLEManager.h"
+﻿#include "BLEManager.h"
 #include "LEDController.h"
 #include "PowerManager.h"
 #include "OTAManager.h"
+#include "GameSettings.h"
 
 BLEManager::BLEManager(LEDController *leds, PowerManager *power, OTAManager *ota)
     : ledController(leds), powerManager(power), otaManager(ota), pServer(nullptr),
@@ -177,6 +178,13 @@ BLECommandData BLEManager::parseCommand(const std::string &value)
     {
         result.command = BLECommand::SET_BRIGHTNESS;
         result.value = std::stoi(value.substr(2));
+        return result;
+    }
+
+    if (value.substr(0, 8) == "autooff:")
+    {
+        result.command = BLECommand::SET_AUTO_OFF;
+        result.value = std::stoi(value.substr(8));
         return result;
     }
 
@@ -426,6 +434,10 @@ void BLEManager::WriteCallbacks::onWrite(BLECharacteristic *pCharacteristic)
         {
             bleManager->ledController->setBlueChannel(constrain(cmdData.value, 0, 255));
         }
+        break;
+
+    case BLECommand::SET_AUTO_OFF:
+        GameSettings::setAutoLedOffEnabled(cmdData.value != 0);
         break;
 
     default:

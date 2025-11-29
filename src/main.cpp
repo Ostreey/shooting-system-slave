@@ -1,4 +1,4 @@
-#include <Arduino.h>
+﻿#include <Arduino.h>
 #include <Wire.h>
 #include <esp_task_wdt.h>
 #include <esp_sleep.h>
@@ -9,6 +9,7 @@
 #include "PowerManager.h"
 #include "OTAManager.h"
 #include "BLEManager.h"
+#include "GameSettings.h"
 
 // Global instances
 LEDController ledController;
@@ -165,7 +166,10 @@ void loop()
 // Callback functions
 void onPiezoHit(int piezoValue)
 {
-    ledController.turnOff();
+    if (GameSettings::isAutoLedOffEnabled())
+    {
+        ledController.turnOff();
+    }
     bleManager.sendPiezoValue(piezoValue);
 }
 
@@ -173,3 +177,4 @@ void onBatteryUpdate(int percentage)
 {
     bleManager.sendBatteryLevel(percentage);
 }
+
