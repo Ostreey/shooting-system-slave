@@ -7,6 +7,8 @@
 
 #include "Config.h"
 #include "IdfCompat.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 extern "C"
 {
@@ -36,6 +38,7 @@ private:
     void handleStartCommand(const std::string &command);
     void handleEndCommand();
     void sendStatus(const std::string &status);
+    void scheduleErrorReset();
 
     StatusCallback statusCallback;
     const esp_partition_t *updatePartition;
@@ -46,6 +49,10 @@ private:
     bool pendingRestart;
     uint64_t restartTimeMs;
     bool initialized;
+    TaskHandle_t otaBeginTaskHandle;
+    bool otaBeginInProgress;
+
+    static void otaBeginTask(void *pvParameters);
 };
 
 #endif // OTA_MANAGER_H

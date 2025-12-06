@@ -6,7 +6,6 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_system.h"
-#include "esp_task_wdt.h"
 
 namespace
 {
@@ -22,7 +21,9 @@ OTAManager::OTAManager()
       otaReceivedSize(0),
       pendingRestart(false),
       restartTimeMs(0),
-      initialized(false)
+      initialized(false),
+      otaBeginTaskHandle(nullptr),
+      otaBeginInProgress(false)
 {
 }
 
@@ -44,20 +45,41 @@ void OTAManager::setStatusCallback(StatusCallback callback)
 
 void OTAManager::handleCommand(const std::string &command)
 {
+    ESP_LOGI(TAG, "Received OTA command: '%s' (length=%zu)", command.c_str(), command.length());
+
     if (command.rfind("START:", 0) == 0)
     {
+        ESP_LOGI(TAG, "Processing START command");
         handleStartCommand(command);
     }
     else if (command == "END")
     {
+        ESP_LOGI(TAG, "Processing END command");
         handleEndCommand();
+    }
+    else
+    {
+        ESP_LOGW(TAG, "Unknown OTA command: '%s'", command.c_str());
+        sendStatus("ERROR:UNKNOWN_COMMAND");
     }
 }
 
 void OTAManager::handleDataChunk(const uint8_t *data, size_t length)
 {
-    if (!otaInProgress || data == nullptr || length == 0)
+    if (data == nullptr || length == 0)
     {
+        return;
+    }
+
+    if (otaBeginInProgress)
+    {
+        ESP_LOGW(TAG, "Data chunk received while OTA begin in progress, ignoring");
+        return;
+    }
+
+    if (!otaInProgress)
+    {
+        ESP_LOGW(TAG, "Data chunk received but OTA not in progress, ignoring");
         return;
     }
 
@@ -67,6 +89,7 @@ void OTAManager::handleDataChunk(const uint8_t *data, size_t length)
         ESP_LOGW(TAG, "Low heap (%zu bytes)", freeHeap);
         sendStatus("ERROR:LOW_MEMORY");
         otaInProgress = false;
+        scheduleErrorReset();
         return;
     }
 
@@ -75,6 +98,7 @@ void OTAManager::handleDataChunk(const uint8_t *data, size_t length)
         ESP_LOGW(TAG, "Chunk too large: %zu > %d", length, OTA_CHUNK_SIZE);
         sendStatus("ERROR:CHUNK_TOO_LARGE");
         otaInProgress = false;
+        scheduleErrorReset();
         return;
     }
 
@@ -84,18 +108,19 @@ void OTAManager::handleDataChunk(const uint8_t *data, size_t length)
                  otaReceivedSize, length, otaFirmwareSize);
         sendStatus("ERROR:SIZE_EXCEEDED");
         otaInProgress = false;
+        scheduleErrorReset();
         return;
     }
 
-    esp_task_wdt_reset();
     esp_err_t err = esp_ota_write(updateHandle, data, length);
-    esp_task_wdt_reset();
 
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Failed to write chunk: %s", esp_err_to_name(err));
         sendStatus(std::string("ERROR:OTA_WRITE:") + esp_err_to_name(err));
         otaInProgress = false;
+        esp_ota_abort(updateHandle);
+        scheduleErrorReset();
         return;
     }
 
@@ -137,6 +162,12 @@ bool OTAManager::isResetAfterOTA()
 
 void OTAManager::handleStartCommand(const std::string &command)
 {
+    if (otaBeginInProgress || otaInProgress)
+    {
+        ESP_LOGW(TAG, "OTA already in progress, ignoring START command");
+        return;
+    }
+
     if (command.size() <= 6)
     {
         sendStatus("ERROR:INVALID_START");
@@ -160,18 +191,50 @@ void OTAManager::handleStartCommand(const std::string &command)
         return;
     }
 
-    esp_err_t err = esp_ota_begin(updatePartition, otaFirmwareSize, &updateHandle);
+    // Kill any existing task
+    if (otaBeginTaskHandle != nullptr)
+    {
+        vTaskDelete(otaBeginTaskHandle);
+        otaBeginTaskHandle = nullptr;
+    }
+
+    // Start OTA begin in a separate task to avoid blocking BLE handler
+    otaBeginInProgress = true;
+    ESP_LOGI(TAG, "Starting OTA begin task for size=%zu", otaFirmwareSize);
+    xTaskCreate(otaBeginTask, "ota_begin", 4096, this, 5, &otaBeginTaskHandle);
+}
+
+void OTAManager::otaBeginTask(void *pvParameters)
+{
+    OTAManager *self = static_cast<OTAManager *>(pvParameters);
+
+    ESP_LOGI(TAG, "OTA begin task started");
+    esp_err_t err = esp_ota_begin(self->updatePartition, self->otaFirmwareSize, &self->updateHandle);
+
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
-        sendStatus(std::string("ERROR:OTA_BEGIN:") + esp_err_to_name(err));
+        self->sendStatus(std::string("ERROR:OTA_BEGIN:") + esp_err_to_name(err));
+        self->otaBeginInProgress = false;
+        self->otaBeginTaskHandle = nullptr;
+        self->scheduleErrorReset();
+        vTaskDelete(nullptr);
         return;
     }
 
-    otaInProgress = true;
-    otaReceivedSize = 0;
-    sendStatus("READY");
-    ESP_LOGI(TAG, "OTA started: size=%zu partition=%s", otaFirmwareSize, updatePartition->label);
+    self->otaInProgress = true;
+    self->otaReceivedSize = 0;
+    self->otaBeginInProgress = false;
+    ESP_LOGI(TAG, "OTA started: size=%zu partition=%s", self->otaFirmwareSize, self->updatePartition->label);
+
+    // Small delay to ensure BLE stack is ready
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    self->sendStatus("READY");
+    ESP_LOGI(TAG, "READY status sent to Android");
+
+    self->otaBeginTaskHandle = nullptr;
+    vTaskDelete(nullptr);
 }
 
 void OTAManager::handleEndCommand()
@@ -189,6 +252,7 @@ void OTAManager::handleEndCommand()
         sendStatus("ERROR:SIZE_MISMATCH");
         otaInProgress = false;
         esp_ota_abort(updateHandle);
+        scheduleErrorReset();
         return;
     }
 
@@ -198,6 +262,8 @@ void OTAManager::handleEndCommand()
         ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(err));
         sendStatus(std::string("ERROR:OTA_END:") + esp_err_to_name(err));
         otaInProgress = false;
+        // OTA end failed, but we can't abort after end - just reset
+        scheduleErrorReset();
         return;
     }
 
@@ -207,6 +273,7 @@ void OTAManager::handleEndCommand()
         ESP_LOGE(TAG, "Failed to set boot partition: %s", esp_err_to_name(err));
         sendStatus(std::string("ERROR:BOOT_PART:") + esp_err_to_name(err));
         otaInProgress = false;
+        scheduleErrorReset();
         return;
     }
 
@@ -223,4 +290,11 @@ void OTAManager::sendStatus(const std::string &status)
     {
         statusCallback(status);
     }
+}
+
+void OTAManager::scheduleErrorReset()
+{
+    ESP_LOGE(TAG, "OTA error detected, scheduling reset in 2 seconds");
+    pendingRestart = true;
+    restartTimeMs = millis64() + 2000; // 2 seconds to allow error message to be sent
 }

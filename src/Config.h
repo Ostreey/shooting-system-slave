@@ -28,7 +28,7 @@
 // ADC Configuration (ESP32-S3)
 // ESP32-S3 ADC Pins: ADC1 (GPIO1-10), ADC2 (GPIO11-20, shared with WiFi)
 // Using ADC1 pins for better compatibility when WiFi is active
-#define DEFAULT_VREF 1100         // Default reference voltage in mV
+#define DEFAULT_VREF 1100 // Default reference voltage in mV
 #define ADC_SAMPLES 64
 #define ADC_ATTEN ADC_ATTEN_DB_11
 #define BATTERY_ADC_CHANNEL ADC1_CHANNEL_2
@@ -47,10 +47,10 @@
 #define LED_GREEN_PIN 12
 #define LED_RED_PIN 1
 #define WAKE_UP_BUTTON_PIN 13
-#define BATTERY_PIN 3          // ADC1 Channel 0 (ESP32-S3 compatible)
+#define BATTERY_PIN 3 // ADC1 Channel 0 (ESP32-S3 compatible)
 #define LED_POWER_ENABLE_PIN 21
 #define CHARGING_PIN 9
-#define PIEZO_SENSOR_PIN 8     // ADC1 Channel 1 (ESP32-S3 compatible)
+#define PIEZO_SENSOR_PIN 8 // ADC1 Channel 1 (ESP32-S3 compatible)
 
 // Timing Constants
 #define TURN_OFF_TIME 2000              // 2 seconds for long press
@@ -63,6 +63,6 @@
 // Battery thresholds
 #define BATTERY_LOW_THRESHOLD 5
 #define BATTERY_MIN_VOLTAGE 340 // 3.4V * 100
-#define BATTERY_MAX_VOLTAGE 420 // 4.2V * 100
+#define BATTERY_MAX_VOLTAGE 400 // 4.2V * 100
 
 #endif // CONFIG_H

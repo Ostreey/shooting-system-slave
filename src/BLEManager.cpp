@@ -436,7 +436,9 @@ void BLEManager::onCreateService(esp_ble_gatts_cb_param_t *param)
     else if (uuidMatches(param->create.service_id.id.uuid, kOtaServiceUuid))
     {
         otaHandles.serviceHandle = param->create.service_handle;
+        ESP_LOGI(TAG, "OTA service created, handle=%d", otaHandles.serviceHandle);
         ESP_ERROR_CHECK(esp_ble_gatts_start_service(otaHandles.serviceHandle));
+        ESP_LOGI(TAG, "OTA service started");
 
         esp_bt_uuid_t commandUuid;
         fillUuid(commandUuid, kOtaCommandUuid);
@@ -471,6 +473,18 @@ void BLEManager::onCreateService(esp_ble_gatts_cb_param_t *param)
             ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY,
             &statusVal,
             nullptr));
+
+        // Add CCCD descriptor for OTA status notifications
+        esp_bt_uuid_t otaStatusDescrUuid = {};
+        otaStatusDescrUuid.len = ESP_UUID_LEN_16;
+        otaStatusDescrUuid.uuid.uuid16 = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
+        esp_attr_value_t otaStatusDescrVal = descriptorValue();
+        ESP_ERROR_CHECK(esp_ble_gatts_add_char_descr(
+            otaHandles.serviceHandle,
+            &otaStatusDescrUuid,
+            ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+            &otaStatusDescrVal,
+            nullptr));
     }
 }
 
@@ -491,14 +505,17 @@ void BLEManager::onAddCharacteristic(esp_ble_gatts_cb_param_t *param)
     else if (uuidMatches(param->add_char.char_uuid, kOtaCommandUuid))
     {
         otaHandles.commandCharHandle = param->add_char.attr_handle;
+        ESP_LOGI(TAG, "OTA command characteristic handle set: %d", otaHandles.commandCharHandle);
     }
     else if (uuidMatches(param->add_char.char_uuid, kOtaDataUuid))
     {
         otaHandles.dataCharHandle = param->add_char.attr_handle;
+        ESP_LOGI(TAG, "OTA data characteristic handle set: %d", otaHandles.dataCharHandle);
     }
     else if (uuidMatches(param->add_char.char_uuid, kOtaStatusUuid))
     {
         otaHandles.statusCharHandle = param->add_char.attr_handle;
+        ESP_LOGI(TAG, "OTA status characteristic handle set: %d", otaHandles.statusCharHandle);
     }
 }
 
@@ -509,14 +526,17 @@ void BLEManager::onAddDescriptor(esp_ble_gatts_cb_param_t *param)
         if (mainHandles.piezoCccHandle == 0)
         {
             mainHandles.piezoCccHandle = param->add_char_descr.attr_handle;
+            ESP_LOGI(TAG, "Piezo CCCD handle set: %d", mainHandles.piezoCccHandle);
         }
         else if (mainHandles.batteryCccHandle == 0)
         {
             mainHandles.batteryCccHandle = param->add_char_descr.attr_handle;
+            ESP_LOGI(TAG, "Battery CCCD handle set: %d", mainHandles.batteryCccHandle);
         }
         else if (mainHandles.firmwareCccHandle == 0)
         {
             mainHandles.firmwareCccHandle = param->add_char_descr.attr_handle;
+            ESP_LOGI(TAG, "Firmware CCCD handle set: %d", mainHandles.firmwareCccHandle);
         }
     }
     else if (param->add_char_descr.service_handle == otaHandles.serviceHandle)
@@ -524,6 +544,7 @@ void BLEManager::onAddDescriptor(esp_ble_gatts_cb_param_t *param)
         if (otaHandles.statusCccHandle == 0)
         {
             otaHandles.statusCccHandle = param->add_char_descr.attr_handle;
+            ESP_LOGI(TAG, "OTA status CCCD handle set: %d", otaHandles.statusCccHandle);
         }
     }
 }
@@ -616,6 +637,45 @@ void BLEManager::updateNotifyState(uint16_t handle, bool enabled)
 
 void BLEManager::onWriteEvent(esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
 {
+    ESP_LOGD(TAG, "Write event: handle=%d, len=%d, need_rsp=%d",
+             param->write.handle, param->write.len, param->write.need_rsp);
+
+    // Handle CCCD descriptor writes (notification enable/disable)
+    if (param->write.handle == mainHandles.piezoCccHandle ||
+        param->write.handle == mainHandles.batteryCccHandle ||
+        param->write.handle == mainHandles.firmwareCccHandle ||
+        param->write.handle == otaHandles.statusCccHandle)
+    {
+        bool enabled = (param->write.len >= 2) &&
+                       (param->write.value[0] != 0 || param->write.value[1] != 0);
+        ESP_LOGI(TAG, "CCCD write: handle=%d, enabled=%d", param->write.handle, enabled);
+
+        if (param->write.handle == otaHandles.statusCccHandle)
+        {
+            otaStatusNotifyEnabled = enabled;
+            ESP_LOGI(TAG, "OTA status notifications %s", enabled ? "enabled" : "disabled");
+        }
+        else if (param->write.handle == mainHandles.piezoCccHandle)
+        {
+            piezoNotifyEnabled = enabled;
+        }
+        else if (param->write.handle == mainHandles.batteryCccHandle)
+        {
+            batteryNotifyEnabled = enabled;
+        }
+        else if (param->write.handle == mainHandles.firmwareCccHandle)
+        {
+            firmwareNotifyEnabled = enabled;
+        }
+
+        if (param->write.need_rsp)
+        {
+            esp_ble_gatts_send_response(gatts_if, param->write.conn_id,
+                                        param->write.trans_id, ESP_GATT_OK, nullptr);
+        }
+        return;
+    }
+
     if (param->write.need_rsp)
     {
         esp_ble_gatts_send_response(gatts_if, param->write.conn_id,
@@ -630,19 +690,47 @@ void BLEManager::onWriteEvent(esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *
     }
     else if (param->write.handle == otaHandles.commandCharHandle)
     {
+        if (otaHandles.commandCharHandle == 0)
+        {
+            ESP_LOGE(TAG, "OTA command handle is 0 - service not initialized!");
+            return;
+        }
+        ESP_LOGI(TAG, "OTA command write received: handle=%d, len=%d",
+                 param->write.handle, param->write.len);
         if (otaManager)
         {
+            // Create string from raw bytes using length parameter
             std::string command(reinterpret_cast<const char *>(param->write.value),
                                 param->write.len);
+            ESP_LOGI(TAG, "Forwarding OTA command to manager: '%s' (len=%zu)",
+                     command.c_str(), command.length());
             otaManager->handleCommand(command);
+        }
+        else
+        {
+            ESP_LOGE(TAG, "OTA manager is null!");
         }
     }
     else if (param->write.handle == otaHandles.dataCharHandle)
     {
+        ESP_LOGD(TAG, "OTA data chunk received: len=%d", param->write.len);
         if (otaManager)
         {
             otaManager->handleDataChunk(param->write.value, param->write.len);
         }
+        else
+        {
+            ESP_LOGE(TAG, "OTA manager is null!");
+        }
+    }
+    else
+    {
+        ESP_LOGW(TAG, "Write to unknown handle: %d (piezo=%d, cmd=%d, data=%d, status=%d)",
+                 param->write.handle,
+                 mainHandles.piezoCharHandle,
+                 otaHandles.commandCharHandle,
+                 otaHandles.dataCharHandle,
+                 otaHandles.statusCharHandle);
     }
 }
 
@@ -769,19 +857,40 @@ void BLEManager::sendFirmwareVersion()
 void BLEManager::sendOtaStatus(const std::string &status)
 {
     lastOtaStatus = status;
+    ESP_LOGI(TAG, "sendOtaStatus: '%s' (connected=%d, notifyEnabled=%d, handle=%d)",
+             status.c_str(), deviceConnected, otaStatusNotifyEnabled, otaHandles.statusCharHandle);
+
     if (otaHandles.statusCharHandle)
     {
-        esp_ble_gatts_set_attr_value(otaHandles.statusCharHandle,
-                                     lastOtaStatus.size(),
-                                     reinterpret_cast<const uint8_t *>(lastOtaStatus.c_str()));
+        esp_err_t err = esp_ble_gatts_set_attr_value(otaHandles.statusCharHandle,
+                                                     lastOtaStatus.size(),
+                                                     reinterpret_cast<const uint8_t *>(lastOtaStatus.c_str()));
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to set OTA status attribute: %s", esp_err_to_name(err));
+        }
     }
+
     if (deviceConnected && otaStatusNotifyEnabled && otaHandles.statusCharHandle)
     {
-        esp_ble_gatts_send_indicate(otaGattIf, connId,
-                                    otaHandles.statusCharHandle,
-                                    lastOtaStatus.size(),
-                                    const_cast<uint8_t *>(reinterpret_cast<const uint8_t *>(lastOtaStatus.c_str())),
-                                    false);
+        esp_err_t err = esp_ble_gatts_send_indicate(otaGattIf, connId,
+                                                    otaHandles.statusCharHandle,
+                                                    lastOtaStatus.size(),
+                                                    const_cast<uint8_t *>(reinterpret_cast<const uint8_t *>(lastOtaStatus.c_str())),
+                                                    false);
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to send OTA status notification: %s", esp_err_to_name(err));
+        }
+        else
+        {
+            ESP_LOGI(TAG, "OTA status notification sent successfully");
+        }
+    }
+    else
+    {
+        ESP_LOGW(TAG, "Cannot send OTA status: connected=%d, notifyEnabled=%d, handle=%d",
+                 deviceConnected, otaStatusNotifyEnabled, otaHandles.statusCharHandle);
     }
 }
 
