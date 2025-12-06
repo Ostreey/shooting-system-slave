@@ -78,12 +78,12 @@ namespace
             delay_ms(1000);
         }
 
-        // if (batteryPercentage < BATTERY_LOW_THRESHOLD)
-        // {
-        //     ESP_LOGW(TAG, "Battery too low for BLE operation, entering deep sleep");
-        //     powerManager.goToDeepSleep(true);
-        //     return;
-        // }
+        if (batteryPercentage < BATTERY_LOW_THRESHOLD)
+        {
+            ESP_LOGW(TAG, "Battery too low for BLE operation, entering deep sleep");
+            powerManager.goToDeepSleep(true);
+            return;
+        }
 
         powerManager.setBatteryCallback(onBatteryUpdate);
 
@@ -102,7 +102,7 @@ namespace
             return;
         }
 
-        //  powerManager.startBatteryMonitoringTask();
+        powerManager.startBatteryMonitoringTask();
         bleManager.startLedStatusTask();
 
         ESP_LOGI(TAG, "All modules initialized successfully");
