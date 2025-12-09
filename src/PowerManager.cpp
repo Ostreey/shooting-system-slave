@@ -244,6 +244,6 @@ void PowerManager::batteryMonitorTaskFunction(void *pvParameters)
             powerManager->goToDeepSleep();
         }
 
-        vTaskDelay(pdMS_TO_TICKS(30000));
+        delay_ms(30000);
     }
 }

@@ -178,6 +178,6 @@ extern "C" void app_main(void)
     while (true)
     {
         appLoopIteration();
-        vTaskDelay(pdMS_TO_TICKS(10));
+        delay_ms(10);
     }
 }

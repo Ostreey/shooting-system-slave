@@ -1097,7 +1097,7 @@ void BLEManager::startLedStatusTask()
 void BLEManager::initialDeviceInfoTask(void *pvParameters)
 {
     auto *manager = static_cast<BLEManager *>(pvParameters);
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    delay_ms(2000);
     if (manager->powerManager)
     {
         int percentage = manager->powerManager->getBatteryPercentage();
@@ -1115,13 +1115,13 @@ void BLEManager::ledStatusTask(void *pvParameters)
         if (!manager->deviceConnected && manager->ledController)
         {
             manager->ledController->setRgbColor(0, 0, 0);
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            delay_ms(1000);
             manager->ledController->setRgbColor(0, 0, 255);
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            delay_ms(1000);
         }
         else
         {
-            vTaskDelay(pdMS_TO_TICKS(100));
+            delay_ms(100);
         }
     }
 }

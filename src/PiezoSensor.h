@@ -8,6 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/adc.h"
+#include "esp_task_wdt.h"
 
 typedef void (*HitCallback)(int piezoValue);
 
@@ -26,10 +27,12 @@ private:
     static void sensorTask(void *pvParameters)
     {
         auto *sensor = static_cast<PiezoSensor *>(pvParameters);
+        esp_task_wdt_add(nullptr);
         for (;;)
         {
             sensor->update();
-            vTaskDelay(pdMS_TO_TICKS(2));
+            delay_ms(2);
+            esp_task_wdt_reset();
         }
     }
 
@@ -61,9 +64,9 @@ public:
             "SensorTask",
             4096,
             this,
-            3,
+            2,
             &taskHandle,
-            app_cpu());
+            0);
     }
 
     void setCallback(HitCallback newCallback)

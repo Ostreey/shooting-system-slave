@@ -63,6 +63,6 @@
 // Battery thresholds
 #define BATTERY_LOW_THRESHOLD 5
 #define BATTERY_MIN_VOLTAGE 340 // 3.4V * 100
-#define BATTERY_MAX_VOLTAGE 400 // 4.2V * 100
+#define BATTERY_MAX_VOLTAGE 420 // 4.2V * 100
 
 #endif // CONFIG_H

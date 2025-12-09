@@ -228,7 +228,7 @@ void OTAManager::otaBeginTask(void *pvParameters)
     ESP_LOGI(TAG, "OTA started: size=%zu partition=%s", self->otaFirmwareSize, self->updatePartition->label);
 
     // Small delay to ensure BLE stack is ready
-    vTaskDelay(pdMS_TO_TICKS(50));
+    delay_ms(50);
 
     self->sendStatus("READY");
     ESP_LOGI(TAG, "READY status sent to Android");
