@@ -1,160 +1,183 @@
-#include <Arduino.h>
-#include <Wire.h>
-#include <esp_task_wdt.h>
-#include <esp_sleep.h>
-#include <esp_system.h>
+#include "BLEManager.h"
+#include "LEDController.h"
+#include "OTAManager.h"
+#include "PiezoSensor.h"
+#include "PowerManager.h"
 
 #include "Config.h"
-#include "PiezoSensor.h"
-#include "LEDController.h"
-#include "PowerManager.h"
-#include "OTAManager.h"
-#include "BLEManager.h"
+#include "IdfCompat.h"
 
-LEDController ledController;
-PowerManager powerManager(&ledController);
-OTAManager otaManager;
-BLEManager bleManager(&ledController, &powerManager, &otaManager);
-PiezoSensor sensor(PIEZO_SENSOR_PIN, 400);
+#include "esp_log.h"
+#include "esp_sleep.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
-void onPiezoHit(int piezoValue);
-void onBatteryUpdate(int percentage);
-
-void setup()
+namespace
 {
-    delay(100);
-    Serial.begin(115200);
-    Serial.println("Start - Modular Version");
-   
+    constexpr char TAG[] = "MainApp";
 
-    esp_sleep_wakeup_cause_t wakeup_cause = esp_sleep_get_wakeup_cause();
-    if (wakeup_cause == ESP_SLEEP_WAKEUP_EXT0)
+    LEDController ledController;
+    PowerManager powerManager(&ledController);
+    OTAManager otaManager;
+    BLEManager bleManager(&ledController, &powerManager, &otaManager);
+    PiezoSensor sensor(PIEZO_SENSOR_PIN, 400);
+    bool initializationComplete = false;
+
+    void onPiezoHit(int piezoValue);
+    void onBatteryUpdate(int percentage);
+
+    void initializeApplication()
     {
-        Serial.println("Woken up from deep sleep");
+        initializationComplete = false;
+        delay_ms(100);
+        ESP_LOGI(TAG, "Start - Modular Version");
 
-        if (!powerManager.validateWakeUp())
+        esp_sleep_wakeup_cause_t wakeupCause = esp_sleep_get_wakeup_cause();
+        if (wakeupCause == ESP_SLEEP_WAKEUP_EXT0)
         {
-
-            Serial.println("Wake-up validation failed - returning to deep sleep");
-            powerManager.goToDeepSleep(true); // Skip LED blink since nothing is initialized yet
-            return;                           // This line will never be reached, but good practice
+            ESP_LOGI(TAG, "Woken up from deep sleep");
+            if (!powerManager.validateWakeUp())
+            {
+                ESP_LOGW(TAG, "Wake-up validation failed, returning to deep sleep");
+                powerManager.goToDeepSleep(true);
+                return;
+            }
+            ESP_LOGI(TAG, "Wake-up validation successful");
+        }
+        else
+        {
+            delay_ms(2000);
+            delay_ms(3000);
         }
 
-        Serial.println("Wake-up validation successful - continuing normal operation");
-    }
-    else
-    {
-        delay(2000);
-
-        delay(3000); // Additional delay for power supply to stabilize
-    }
-
-    if (!ledController.begin())
-    {
-        Serial.println("Failed to initialize LED controller");
-        return;
-    }
-    if (!powerManager.begin())
-    {
-        Serial.println("Failed to initialize power manager");
-        return;
-    }
-
-    int batteryPercentage = powerManager.getBatteryPercentage();
-    Serial.printf("Battery level: %d%%\n", batteryPercentage);
-
-    if (batteryPercentage < BATTERY_LOW_THRESHOLD)
-    {
-        ledController.setRedChannel(255);
-    }
-    else
-    {
-        ledController.setBlueChannel(255);
-    }
-
-    if (wakeup_cause != ESP_SLEEP_WAKEUP_EXT0)
-    {
-        delay(1000);
-    }
-
-    if (batteryPercentage < BATTERY_LOW_THRESHOLD)
-    {
-        Serial.println("Battery too low for BLE operation, going to sleep immediately");
-        powerManager.goToDeepSleep(true);
-        return;
-    }
-
-    powerManager.setBatteryCallback(onBatteryUpdate);
-
-    if (wakeup_cause != ESP_SLEEP_WAKEUP_EXT0)
-    {
-        ledController.turnOff();
-        delay(1000);
-    }
-
-    sensor.begin();
-    sensor.setCallback(onPiezoHit);
-
-    if (!bleManager.begin())
-    {
-        Serial.println("Failed to initialize BLE manager");
-        return;
-    }
-
-    powerManager.startBatteryMonitoringTask();
-
-    bleManager.startLedStatusTask();
-
-    Serial.println("All modules initialized successfully");
-
-    if (otaManager.isResetAfterOTA())
-    {
-        Serial.println("System restarted after OTA update");
-    }
-}
-
-void loop()
-{
-    static unsigned long pressStartTime = 0;
-    static bool buttonPressed = false;
-
-    otaManager.checkPendingRestart();
-
-    if (powerManager.isButtonPressed())
-    {
-        if (!buttonPressed)
+        if (!ledController.begin())
         {
+            ESP_LOGE(TAG, "Failed to initialize LED controller");
+            return;
+        }
+        if (!powerManager.begin())
+        {
+            ESP_LOGE(TAG, "Failed to initialize power manager");
+            return;
+        }
 
-            pressStartTime = millis();
-            buttonPressed = true;
-            Serial.println("Button pressed");
+        int batteryPercentage = powerManager.getBatteryPercentage();
+        ESP_LOGI(TAG, "Battery level: %d%%", batteryPercentage);
 
-            if (powerManager.isJustWokenUp())
+        if (batteryPercentage < BATTERY_LOW_THRESHOLD)
+        {
+            ledController.setRedChannel(255);
+        }
+        else
+        {
+            ledController.setBlueChannel(255);
+        }
+
+        if (wakeupCause != ESP_SLEEP_WAKEUP_EXT0)
+        {
+            delay_ms(1000);
+        }
+
+        if (batteryPercentage < BATTERY_LOW_THRESHOLD)
+        {
+            ESP_LOGW(TAG, "Battery too low for BLE operation, entering deep sleep");
+            powerManager.goToDeepSleep(true);
+            return;
+        }
+
+        powerManager.setBatteryCallback(onBatteryUpdate);
+
+        if (wakeupCause != ESP_SLEEP_WAKEUP_EXT0)
+        {
+            ledController.turnOff();
+            delay_ms(1000);
+        }
+
+        sensor.begin();
+        sensor.setCallback(onPiezoHit);
+
+        if (!bleManager.begin())
+        {
+            ESP_LOGE(TAG, "Failed to initialize BLE manager");
+            return;
+        }
+
+        powerManager.startBatteryMonitoringTask();
+        bleManager.startLedStatusTask();
+
+        ESP_LOGI(TAG, "All modules initialized successfully");
+
+        if (otaManager.isResetAfterOTA())
+        {
+            ESP_LOGI(TAG, "System restarted after OTA update");
+        }
+
+        initializationComplete = true;
+    }
+
+    void appLoopIteration()
+    {
+        static uint64_t pressStartTimeMs = 0;
+        static bool buttonPressed = false;
+
+        otaManager.checkPendingRestart();
+
+        if (powerManager.isButtonPressed())
+        {
+            if (!buttonPressed)
             {
-                powerManager.clearWakeUpFlag();
-                Serial.println("Reset justWokenUp flag");
+                pressStartTimeMs = millis64();
+                buttonPressed = true;
+                ESP_LOGI(TAG, "Button pressed");
+
+                if (powerManager.isJustWokenUp())
+                {
+                    powerManager.clearWakeUpFlag();
+                    ESP_LOGI(TAG, "Reset justWokenUp flag");
+                }
+            }
+
+            if ((millis64() - pressStartTimeMs) > TURN_OFF_TIME)
+            {
+                ESP_LOGI(TAG, "Turn-off time detected");
+                powerManager.goToDeepSleep();
             }
         }
-
-        if ((millis() - pressStartTime) > TURN_OFF_TIME)
+        else if (buttonPressed)
         {
-            Serial.println("TURN OFF TIME DETECTED");
-            powerManager.goToDeepSleep();
+            buttonPressed = false;
         }
     }
-    else if (buttonPressed)
+
+    void onPiezoHit(int piezoValue)
     {
-        buttonPressed = false;
+        if (bleManager.getAutoLedOff())
+        {
+            ledController.turnOff();
+        }
+        bleManager.sendPiezoValue(piezoValue);
+    }
+
+    void onBatteryUpdate(int percentage)
+    {
+        bleManager.sendBatteryLevel(percentage);
     }
 }
 
-void onPiezoHit(int piezoValue)
+extern "C" void app_main(void)
 {
-    ledController.turnOff();
-    bleManager.sendPiezoValue(piezoValue);
-}
+    initializeApplication();
 
-void onBatteryUpdate(int percentage)
-{
-    bleManager.sendBatteryLevel(percentage);
+    if (!initializationComplete)
+    {
+        ESP_LOGE(TAG, "Initialization failed, halting main loop");
+        vTaskDelay(portMAX_DELAY);
+        return;
+    }
+
+    while (true)
+    {
+        appLoopIteration();
+        delay_ms(10);
+    }
 }

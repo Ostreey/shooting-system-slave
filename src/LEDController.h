@@ -1,8 +1,10 @@
 #ifndef LED_CONTROLLER_H
 #define LED_CONTROLLER_H
 
-#include <Arduino.h>
+#include <string>
+
 #include "Config.h"
+#include "IdfCompat.h"
 
 class LEDController
 {
@@ -26,7 +28,7 @@ public:
     void setBlueChannel(int value);
 
     // Predefined colors
-    void setPredefinedColor(const String &colorName);
+    void setPredefinedColor(const std::string &colorName);
 
     // Brightness control
     void setBrightness(int value);
