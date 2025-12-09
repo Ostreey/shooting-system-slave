@@ -151,7 +151,10 @@ namespace
 
     void onPiezoHit(int piezoValue)
     {
-        ledController.turnOff();
+        if (bleManager.getAutoLedOff())
+        {
+            ledController.turnOff();
+        }
         bleManager.sendPiezoValue(piezoValue);
     }
 

@@ -4,7 +4,7 @@
 #include "driver/adc.h"
 
 // Firmware version
-#define FIRMWARE_VERSION "1.0.3"
+#define FIRMWARE_VERSION "1.0.5"
 
 // BLE Configuration
 #define BLE_SERVER_NAME "SHOOTING TARGET"

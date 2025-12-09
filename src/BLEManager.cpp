@@ -90,6 +90,11 @@ BLEManager::BLEManager(LEDController *leds, PowerManager *power, OTAManager *ota
       mainGattIf(ESP_GATT_IF_NONE),
       otaGattIf(ESP_GATT_IF_NONE),
       connId(0),
+      piezoNotifyEnabled(false),
+      batteryNotifyEnabled(false),
+      firmwareNotifyEnabled(false),
+      otaStatusNotifyEnabled(false),
+      autoLedOff(true),
       ledStatusTaskHandle(nullptr),
       pendingDescriptorOwner(DescriptorOwner::None),
       advDataConfigured(false)
@@ -791,6 +796,10 @@ void BLEManager::processCommand(const std::string &value)
     case BLECommand::BLE_PHY_INFO:
         logBLEPHYInfo();
         break;
+    case BLECommand::SET_AUTO_LED_OFF:
+        autoLedOff = (cmdData.value != 0);
+        ESP_LOGI(TAG, "Auto LED off set to: %d", autoLedOff ? 1 : 0);
+        break;
     default:
         ESP_LOGW(TAG, "Unknown BLE command");
         break;
@@ -967,6 +976,11 @@ BLECommandData BLEManager::parseCommand(const std::string &value)
         result.command = BLECommand::BLE_PHY_INFO;
     else if (value == "off")
         result.command = BLECommand::SET_COLOR;
+    else if (value.rfind("autooff:", 0) == 0)
+    {
+        result.command = BLECommand::SET_AUTO_LED_OFF;
+        result.value = parseInt(value.substr(8));
+    }
 
     return result;
 }

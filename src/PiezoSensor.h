@@ -29,7 +29,7 @@ private:
         for (;;)
         {
             sensor->update();
-            vTaskDelay(pdMS_TO_TICKS(10));
+            vTaskDelay(pdMS_TO_TICKS(2));
         }
     }
 

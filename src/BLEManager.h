@@ -38,6 +38,7 @@ enum class BLECommand
     BLINK_COLOR,
     BLE_STATUS,
     BLE_PHY_INFO,
+    SET_AUTO_LED_OFF,
 };
 
 struct BLECommandData
@@ -58,6 +59,7 @@ public:
     void sendBatteryLevel(int percentage);
     void sendFirmwareVersion();
     void onPiezoHit();
+    bool getAutoLedOff() const { return autoLedOff; }
 
     static BLECommandData parseCommand(const std::string &value);
 
@@ -108,6 +110,7 @@ private:
     bool batteryNotifyEnabled;
     bool firmwareNotifyEnabled;
     bool otaStatusNotifyEnabled;
+    bool autoLedOff;
 
     TaskHandle_t ledStatusTaskHandle;
 
