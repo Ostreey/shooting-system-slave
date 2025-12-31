@@ -44,7 +44,7 @@
 // GPIO Pin Definitions (ESP32-S3 compatible)
 // Note: These pins are compatible with ESP32-S3 and don't conflict with strapping pins
 #define LED_BLUE_PIN 14
-#define LED_GREEN_PIN 12
+#define LED_GREEN_PIN 2
 #define LED_RED_PIN 1
 #define WAKE_UP_BUTTON_PIN 13
 #define BATTERY_PIN 3 // ADC1 Channel 0 (ESP32-S3 compatible)
