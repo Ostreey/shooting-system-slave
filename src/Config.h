@@ -1,8 +1,10 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#include "driver/adc.h"
+
 // Firmware version
-#define FIRMWARE_VERSION "1.0.3"
+#define FIRMWARE_VERSION "1.0.5"
 
 // BLE Configuration
 #define BLE_SERVER_NAME "SHOOTING TARGET"
@@ -26,9 +28,11 @@
 // ADC Configuration (ESP32-S3)
 // ESP32-S3 ADC Pins: ADC1 (GPIO1-10), ADC2 (GPIO11-20, shared with WiFi)
 // Using ADC1 pins for better compatibility when WiFi is active
-#define DEFAULT_VREF 1100         // Default reference voltage in mV
-#define ADC_SAMPLES 64            // Number of samples for averaging
-#define ADC_ATTEN ADC_ATTEN_DB_11 // 11dB attenuation for 0-3.3V range
+#define DEFAULT_VREF 1100 // Default reference voltage in mV
+#define ADC_SAMPLES 64
+#define ADC_ATTEN ADC_ATTEN_DB_11
+#define BATTERY_ADC_CHANNEL ADC1_CHANNEL_2
+#define PIEZO_ADC_CHANNEL ADC1_CHANNEL_7
 
 // PWM Configuration
 #define PWM_FREQUENCY 5000
@@ -40,13 +44,13 @@
 // GPIO Pin Definitions (ESP32-S3 compatible)
 // Note: These pins are compatible with ESP32-S3 and don't conflict with strapping pins
 #define LED_BLUE_PIN 14
-#define LED_GREEN_PIN 12
+#define LED_GREEN_PIN 2
 #define LED_RED_PIN 1
 #define WAKE_UP_BUTTON_PIN 13
-#define BATTERY_PIN 3          // ADC1 Channel 0 (ESP32-S3 compatible)
+#define BATTERY_PIN 3 // ADC1 Channel 0 (ESP32-S3 compatible)
 #define LED_POWER_ENABLE_PIN 21
 #define CHARGING_PIN 9
-#define PIEZO_SENSOR_PIN 8     // ADC1 Channel 1 (ESP32-S3 compatible)
+#define PIEZO_SENSOR_PIN 8 // ADC1 Channel 1 (ESP32-S3 compatible)
 
 // Timing Constants
 #define TURN_OFF_TIME 2000              // 2 seconds for long press
