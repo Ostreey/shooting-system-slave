@@ -77,7 +77,7 @@ void setup()
 
 
     // Show initialization progress with LEDs
-    if (wakeup_cause == !ESP_SLEEP_WAKEUP_EXT0)
+    if (wakeup_cause != ESP_SLEEP_WAKEUP_EXT0)
     {
         delay(1000);
     }

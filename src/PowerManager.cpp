@@ -1,5 +1,8 @@
 #include "PowerManager.h"
 #include "LEDController.h"
+#ifdef BOARD_ESP32S3
+#include "driver/rtc_io.h"
+#endif
 
 PowerManager::PowerManager(LEDController *leds)
     : ledController(leds), batteryTaskHandle(nullptr), lastDisconnectTime(0),
@@ -17,8 +20,8 @@ bool PowerManager::begin()
 
     // Initialize GPIO pins
     pinMode(WAKE_UP_BUTTON_PIN, INPUT_PULLUP);
-    gpio_set_pull_mode(GPIO_NUM_15, GPIO_PULLUP_ONLY);
-    gpio_set_direction(GPIO_NUM_15, GPIO_MODE_INPUT);
+    gpio_set_pull_mode((gpio_num_t)WAKE_UP_BUTTON_PIN, GPIO_PULLUP_ONLY);
+    gpio_set_direction((gpio_num_t)WAKE_UP_BUTTON_PIN, GPIO_MODE_INPUT);
     pinMode(BATTERY_PIN, INPUT);
     pinMode(CHARGING_PIN, INPUT_PULLUP);
 
@@ -52,7 +55,7 @@ int PowerManager::getBatteryPercentage()
     // Convert to actual battery voltage (multiply by 1.5 due to voltage divider)
     float batteryVoltage = voltage * 1.5;
 
-    // Convert to percentage (assuming 4.2V is 100% and 3.6V is 0%)
+    // Convert to percentage (4.2V = 100%, min depends on power supply: 3.0V for buck-boost, 3.4V for LDO)
     int percentage = map(batteryVoltage * 100, BATTERY_MIN_VOLTAGE, BATTERY_MAX_VOLTAGE, 0, 100);
     percentage = constrain(percentage, 0, 100);
 
@@ -87,19 +90,26 @@ void PowerManager::goToDeepSleep(bool skipLedBlink)
 
     Serial.println("Going to deep sleep...");
 
-    // Configure GPIO15 properly before sleep
-    // Set as input with internal pull-up to prevent floating state
-    gpio_set_direction(GPIO_NUM_15, GPIO_MODE_INPUT);
-    gpio_set_pull_mode(GPIO_NUM_15, GPIO_PULLUP_ONLY);
+    // Configure wake-up button GPIO properly before sleep
+    gpio_set_direction((gpio_num_t)WAKE_UP_BUTTON_PIN, GPIO_MODE_INPUT);
+    gpio_set_pull_mode((gpio_num_t)WAKE_UP_BUTTON_PIN, GPIO_PULLUP_ONLY);
+#ifdef BOARD_ESP32S3
+    // ESP32-S3 requires RTC GPIO init — regular GPIO pull-ups don't survive deep sleep
+    rtc_gpio_init((gpio_num_t)WAKE_UP_BUTTON_PIN);
+    rtc_gpio_set_direction((gpio_num_t)WAKE_UP_BUTTON_PIN, RTC_GPIO_MODE_INPUT_ONLY);
+    rtc_gpio_pulldown_dis((gpio_num_t)WAKE_UP_BUTTON_PIN);
+    rtc_gpio_pullup_en((gpio_num_t)WAKE_UP_BUTTON_PIN);
+#endif
 
     // Add small delay to stabilize GPIO state
     delay(100);
 
-    esp_err_t ext0Result = esp_sleep_enable_ext0_wakeup(GPIO_NUM_15, 0);
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    esp_err_t ext0Result = esp_sleep_enable_ext0_wakeup((gpio_num_t)WAKE_UP_BUTTON_PIN, 0);
     if (ext0Result != ESP_OK)
     {
         Serial.printf("ext0 wake-up failed, trying ext1: %s\n", esp_err_to_name(ext0Result));
-        esp_sleep_enable_ext1_wakeup(((1ULL << GPIO_NUM_15)), ESP_EXT1_WAKEUP_ANY_HIGH);
+        esp_sleep_enable_ext1_wakeup((1ULL << WAKE_UP_BUTTON_PIN), ESP_EXT1_WAKEUP_ANY_HIGH);
     }
 
     Serial.println("Deep sleep configuration complete");
@@ -115,9 +125,15 @@ bool PowerManager::validateWakeUp()
 {
     Serial.println("Validating wake-up - button must be held for 2 seconds...");
 
-    // Ensure GPIO15 is properly configured for reading
-    gpio_set_direction(GPIO_NUM_15, GPIO_MODE_INPUT);
-    gpio_set_pull_mode(GPIO_NUM_15, GPIO_PULLUP_ONLY);
+    // Ensure wake-up button GPIO is properly configured for reading
+    gpio_set_direction((gpio_num_t)WAKE_UP_BUTTON_PIN, GPIO_MODE_INPUT);
+    gpio_set_pull_mode((gpio_num_t)WAKE_UP_BUTTON_PIN, GPIO_PULLUP_ONLY);
+#ifdef BOARD_ESP32S3
+    rtc_gpio_init((gpio_num_t)WAKE_UP_BUTTON_PIN);
+    rtc_gpio_set_direction((gpio_num_t)WAKE_UP_BUTTON_PIN, RTC_GPIO_MODE_INPUT_ONLY);
+    rtc_gpio_pulldown_dis((gpio_num_t)WAKE_UP_BUTTON_PIN);
+    rtc_gpio_pullup_en((gpio_num_t)WAKE_UP_BUTTON_PIN);
+#endif
 
     // Small delay to stabilize GPIO state
     delay(100);
