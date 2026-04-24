@@ -40,7 +40,8 @@ jobs:
     - name: Extract version from source
       id: version
       run: |
-        VERSION=$(grep -o '#define FIRMWARE_VERSION "[^"]*"' src/Config.h | cut -d'"' -f2)
+        # Extract just the semver (e.g. "1.0.6") — strip any "-esp32"/"-esp32s3" board suffix
+        VERSION=$(grep -oE '#define FIRMWARE_VERSION "[0-9]+\.[0-9]+\.[0-9]+' src/Config.h | head -n1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
         echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "Firmware version: $VERSION"
 

@@ -1,8 +1,12 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-// Firmware version
-#define FIRMWARE_VERSION "1.0.5"
+// Firmware version — includes board suffix so the Android app can select the correct binary
+#ifdef BOARD_ESP32S3
+#define FIRMWARE_VERSION "1.0.6-esp32s3"
+#else
+#define FIRMWARE_VERSION "1.0.6-esp32"
+#endif
 
 // BLE Configuration
 #define BLE_SERVER_NAME "SHOOTING TARGET"
