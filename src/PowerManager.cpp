@@ -35,30 +35,45 @@ bool PowerManager::begin()
     return true;
 }
 
+static int voltageToPercent(int vx100)
+{
+    // Li-Ion discharge curve: {voltage*100, percent}
+    static const struct { uint16_t v; uint8_t p; } lut[] = {
+        {420, 100}, {415, 95}, {411, 90}, {408, 85},
+        {402, 80},  {398, 75}, {395, 70}, {391, 65},
+        {387, 60},  {383, 55}, {379, 50}, {375, 45},
+        {371, 40},  {367, 35}, {363, 30}, {359, 25},
+        {355, 20},  {350, 15}, {345, 10}, {340,  5},
+        {330,  2},  {300,  0},
+    };
+    static const int N = sizeof(lut) / sizeof(lut[0]);
+
+    if (vx100 >= lut[0].v)   return 100;
+    if (vx100 <= lut[N-1].v) return 0;
+
+    for (int i = 0; i < N - 1; i++)
+    {
+        if (vx100 >= lut[i + 1].v)
+            return lut[i + 1].p + (vx100 - lut[i + 1].v) * (lut[i].p - lut[i + 1].p) / (lut[i].v - lut[i + 1].v);
+    }
+    return 0;
+}
+
 int PowerManager::getBatteryPercentage()
 {
     if (!isInitialized)
         return 100;
 
-    // Read multiple samples and average them
     uint32_t adcReading = 0;
     for (int i = 0; i < ADC_SAMPLES; i++)
-    {
         adcReading += analogRead(BATTERY_PIN);
-    }
     adcReading /= ADC_SAMPLES;
 
-    // Convert to voltage using calibration
     uint32_t voltageMv = esp_adc_cal_raw_to_voltage(adcReading, &adcChars);
-    float voltage = voltageMv / 1000.0; // Convert to volts
+    int batteryMv = (int)(voltageMv * 3 / 2) + ADC_BATTERY_OFFSET_MV;
+    Serial.printf("Battery: %d.%02dV\n", batteryMv / 1000, (batteryMv % 1000) / 10);
 
-    // Convert to actual battery voltage (multiply by 1.5 due to voltage divider)
-    float batteryVoltage = voltage * 1.5;
-
-    // Convert to percentage (4.2V = 100%, min depends on power supply: 3.0V for buck-boost, 3.4V for LDO)
-    int percentage = map(batteryVoltage * 100, BATTERY_MIN_VOLTAGE, BATTERY_MAX_VOLTAGE, 0, 100);
-    percentage = constrain(percentage, 0, 100);
-
+    int percentage = constrain(voltageToPercent(batteryMv / 10), 0, 100);
     return percentage;
 }
 
@@ -199,7 +214,7 @@ void PowerManager::startBatteryMonitoringTask()
         xTaskCreatePinnedToCore(
             batteryMonitorTaskFunction,
             "BatteryMonitor",
-            2048,
+            4096,
             this, // Pass this instance as parameter
             2,
             &batteryTaskHandle,

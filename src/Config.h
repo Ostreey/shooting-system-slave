@@ -39,6 +39,11 @@
 #define ADC_SAMPLES 64            // Number of samples for averaging
 #define ADC_ATTEN ADC_ATTEN_DB_11 // 11dB attenuation for 0-3.3V range
 
+// ESP32 ADC systematic underread compensation (mV at battery level, after voltage divider ×1.5)
+// Tune by: measure actual battery voltage with multimeter, compare to Serial log "Battery: X.XXV"
+// Increase if displayed % is too low, decrease if too high. Typical range: 100–200 mV.
+#define ADC_BATTERY_OFFSET_MV 100
+
 // PWM Configuration
 #define PWM_FREQUENCY 5000
 #define PWM_RESOLUTION 8 // 8-bit resolution (0-255)
@@ -52,11 +57,11 @@
 #define LED_GREEN_PIN 12
 #define LED_RED_PIN 1
 #define WAKE_UP_BUTTON_PIN 13
-#define BATTERY_PIN 3          // ADC1 Channel 0 (ESP32-S3 compatible)
+#define BATTERY_PIN 3 // ADC1 Channel 0 (ESP32-S3 compatible)
 #define LED_POWER_ENABLE_PIN 21
 #define CHARGING_PIN 9
-#define PIEZO_SENSOR_PIN 8     // ADC1 Channel 1 (ESP32-S3 compatible)
-#else // BOARD_ESP32
+#define PIEZO_SENSOR_PIN 8 // ADC1 Channel 1 (ESP32-S3 compatible)
+#else                      // BOARD_ESP32
 #define LED_BLUE_PIN 17
 #define LED_GREEN_PIN 18
 #define LED_RED_PIN 19
@@ -79,7 +84,7 @@
 #define BUCKBOOST true
 
 // Battery thresholds
-#define BATTERY_LOW_THRESHOLD 5
+#define BATTERY_LOW_THRESHOLD 4
 #define BATTERY_MAX_VOLTAGE 420 // 4.2V * 100
 
 #if BUCKBOOST
