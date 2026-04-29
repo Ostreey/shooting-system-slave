@@ -12,6 +12,7 @@
 class LEDController;
 class PowerManager;
 class OTAManager;
+class PiezoSensor;
 
 enum class BLECommand
 {
@@ -27,6 +28,11 @@ enum class BLECommand
     SET_BLUE,
     SET_AUTO_OFF,
     BLINK_COLOR,
+    CALIB_GET,
+    CALIB_SET,
+    CALIB_RESET,
+    PEAK_START,
+    PEAK_STOP,
 #ifdef BOARD_ESP32S3
     BLE_STATUS,
     BLE_PHY_INFO,
@@ -45,12 +51,14 @@ private:
     LEDController *ledController;
     PowerManager *powerManager;
     OTAManager *otaManager;
+    PiezoSensor *piezoSensor;
 
     BLEServer *pServer;
     BLEService *piezoService;
     BLECharacteristic *piezoCharacteristic;
     BLECharacteristic *batteryCharacteristic;
     BLECharacteristic *firmwareVersionCharacteristic;
+    BLECharacteristic *calibrationCharacteristic;
 
 #ifdef BOARD_ESP32S3
     BLEMultiAdvertising *pMultiAdvertising;
@@ -61,7 +69,7 @@ private:
     unsigned long hitTime;
 
 public:
-    BLEManager(LEDController *leds, PowerManager *power, OTAManager *ota);
+    BLEManager(LEDController *leds, PowerManager *power, OTAManager *ota, PiezoSensor *sensor);
 
     // Initialization
     bool begin();
@@ -73,6 +81,8 @@ public:
     void sendPiezoValue(int piezoValue);
     void sendBatteryLevel(int percentage);
     void sendFirmwareVersion();
+    void sendCalibrationConfig();
+    void sendPeakValue(uint16_t peakValue);
 
     // Hit detection
     void onPiezoHit();
@@ -122,6 +132,10 @@ private:
     void handleColorCommand(const std::string &value);
     void handleBlinkColorCommand(const std::string &value);
     void handleStartColorCommand(const std::string &value);
+    void handleCalibSetCommand(const std::string &value);
+    void handleCalibResetCommand();
+    void handlePeakStartCommand();
+    void handlePeakStopCommand();
 
     // Common RGB parsing helper
     bool parseRgbValues(const std::string &rgbStr, int &red, int &green, int &blue);

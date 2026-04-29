@@ -10,16 +10,18 @@
 #include "OTAManager.h"
 #include "BLEManager.h"
 #include "GameSettings.h"
+#include "CalibrationStore.h"
 
 // Global instances
 LEDController ledController;
 PowerManager powerManager(&ledController);
 OTAManager otaManager;
-BLEManager bleManager(&ledController, &powerManager, &otaManager);
-PiezoSensor sensor(PIEZO_SENSOR_PIN, 400);
+PiezoSensor sensor(PIEZO_SENSOR_PIN);
+BLEManager bleManager(&ledController, &powerManager, &otaManager, &sensor);
 
 // Forward declarations
 void onPiezoHit(int piezoValue);
+void onPiezoPeak(uint16_t peakValue);
 void onBatteryUpdate(int percentage);
 
 void setup()
@@ -98,9 +100,17 @@ void setup()
         delay(1000);
     }
 
+    // Load persisted calibration before starting the sensor task
+    CalibrationStore::begin();
+    sensor.setThreshold(CalibrationStore::loadThreshold());
+    sensor.setDebounceMs(CalibrationStore::loadDebounceMs());
+    Serial.printf("Piezo calibration loaded: threshold=%u, debounce=%u ms\n",
+                  sensor.getThreshold(), sensor.getDebounceMs());
+
     // Initialize sensor
     sensor.begin();
     sensor.setCallback(onPiezoHit);
+    sensor.setPeakCallback(onPiezoPeak);
 
     // Initialize BLE manager
     if (!bleManager.begin())
@@ -171,6 +181,11 @@ void onPiezoHit(int piezoValue)
         ledController.turnOff();
     }
     bleManager.sendPiezoValue(piezoValue);
+}
+
+void onPiezoPeak(uint16_t peakValue)
+{
+    bleManager.sendPeakValue(peakValue);
 }
 
 void onBatteryUpdate(int percentage)

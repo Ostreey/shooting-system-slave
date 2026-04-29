@@ -3,15 +3,17 @@
 #include "PowerManager.h"
 #include "OTAManager.h"
 #include "GameSettings.h"
+#include "PiezoSensor.h"
+#include "CalibrationStore.h"
 #ifdef BOARD_ESP32S3
 #include <string.h>
 #include <esp_gap_ble_api.h>
 #endif
 
-BLEManager::BLEManager(LEDController *leds, PowerManager *power, OTAManager *ota)
-    : ledController(leds), powerManager(power), otaManager(ota), pServer(nullptr),
+BLEManager::BLEManager(LEDController *leds, PowerManager *power, OTAManager *ota, PiezoSensor *sensor)
+    : ledController(leds), powerManager(power), otaManager(ota), piezoSensor(sensor), pServer(nullptr),
       piezoService(nullptr), piezoCharacteristic(nullptr), batteryCharacteristic(nullptr),
-      firmwareVersionCharacteristic(nullptr),
+      firmwareVersionCharacteristic(nullptr), calibrationCharacteristic(nullptr),
 #ifdef BOARD_ESP32S3
       pMultiAdvertising(nullptr),
 #endif
@@ -70,10 +72,15 @@ bool BLEManager::begin()
         FIRMWARE_VERSION_CHARACTERISTIC,
         BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
 
+    calibrationCharacteristic = piezoService->createCharacteristic(
+        CALIBRATION_CHARACTERISTIC,
+        BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
+
     // Add Descriptors and Callbacks
     piezoCharacteristic->addDescriptor(new BLE2902());
     batteryCharacteristic->addDescriptor(new BLE2902());
     firmwareVersionCharacteristic->addDescriptor(new BLE2902());
+    calibrationCharacteristic->addDescriptor(new BLE2902());
     piezoCharacteristic->setCallbacks(new WriteCallbacks(this));
     firmwareVersionCharacteristic->setValue(FIRMWARE_VERSION);
 
@@ -278,6 +285,35 @@ void BLEManager::sendFirmwareVersion()
     }
 }
 
+void BLEManager::sendCalibrationConfig()
+{
+    if (!calibrationCharacteristic || !piezoSensor)
+    {
+        return;
+    }
+
+    String payload = "calib:" + String(piezoSensor->getThreshold()) + ":" + String(piezoSensor->getDebounceMs());
+    calibrationCharacteristic->setValue(payload.c_str());
+    if (deviceConnected)
+    {
+        calibrationCharacteristic->notify();
+    }
+    Serial.println("Calibration config sent: " + payload);
+}
+
+void BLEManager::sendPeakValue(uint16_t peakValue)
+{
+    if (!calibrationCharacteristic || !deviceConnected)
+    {
+        return;
+    }
+
+    String payload = "peak:" + String(peakValue);
+    calibrationCharacteristic->setValue(payload.c_str());
+    calibrationCharacteristic->notify();
+    Serial.println("Peak sent: " + payload);
+}
+
 BLECommandData BLEManager::parseCommand(const std::string &value)
 {
     BLECommandData result = {BLECommand::UNKNOWN, 0};
@@ -330,6 +366,35 @@ BLECommandData BLEManager::parseCommand(const std::string &value)
     {
         result.command = BLECommand::SET_AUTO_OFF;
         result.value = std::stoi(value.substr(8));
+        return result;
+    }
+
+    // Calibration commands
+    if (value == "calib:get")
+    {
+        result.command = BLECommand::CALIB_GET;
+        return result;
+    }
+    if (value == "calib:reset")
+    {
+        result.command = BLECommand::CALIB_RESET;
+        return result;
+    }
+    if (value.substr(0, 10) == "calib:set:")
+    {
+        result.command = BLECommand::CALIB_SET;
+        return result;
+    }
+
+    // Peak measurement mode commands
+    if (value == "peak:start")
+    {
+        result.command = BLECommand::PEAK_START;
+        return result;
+    }
+    if (value == "peak:stop")
+    {
+        result.command = BLECommand::PEAK_STOP;
         return result;
     }
 
@@ -457,6 +522,76 @@ void BLEManager::handleStartColorCommand(const std::string &value)
     }
 }
 
+void BLEManager::handleCalibSetCommand(const std::string &value)
+{
+    // Format: calib:set:<threshold>:<debounceMs>
+    std::string payload = value.substr(10);
+    size_t sep = payload.find(':');
+    if (sep == std::string::npos)
+    {
+        Serial.println("Invalid calib:set format. Use: calib:set:<threshold>:<debounceMs>");
+        return;
+    }
+
+    try
+    {
+        int thr = std::stoi(payload.substr(0, sep));
+        int deb = std::stoi(payload.substr(sep + 1));
+
+        if (piezoSensor)
+        {
+            piezoSensor->setThreshold(static_cast<uint16_t>(thr));
+            piezoSensor->setDebounceMs(static_cast<uint16_t>(deb));
+            CalibrationStore::saveThreshold(piezoSensor->getThreshold());
+            CalibrationStore::saveDebounceMs(piezoSensor->getDebounceMs());
+        }
+        sendCalibrationConfig();
+    }
+    catch (const std::exception &e)
+    {
+        Serial.print("Failed to parse calib:set values: ");
+        Serial.println(e.what());
+    }
+}
+
+void BLEManager::handleCalibResetCommand()
+{
+    CalibrationStore::resetToDefaults();
+    if (piezoSensor)
+    {
+        piezoSensor->setThreshold(CalibrationStore::loadThreshold());
+        piezoSensor->setDebounceMs(CalibrationStore::loadDebounceMs());
+    }
+    sendCalibrationConfig();
+}
+
+void BLEManager::handlePeakStartCommand()
+{
+    if (piezoSensor)
+    {
+        piezoSensor->startMeasurement();
+    }
+    if (ledController)
+    {
+        // Solid yellow indicates measurement mode is active
+        ledController->setRgbColor(255, 200, 0);
+    }
+    Serial.println("Peak measurement mode: START");
+}
+
+void BLEManager::handlePeakStopCommand()
+{
+    if (piezoSensor)
+    {
+        piezoSensor->stopMeasurement();
+    }
+    if (ledController)
+    {
+        ledController->turnOff();
+    }
+    Serial.println("Peak measurement mode: STOP");
+}
+
 void BLEManager::startLedStatusTask()
 {
     if (ledStatusTaskHandle == nullptr)
@@ -485,6 +620,7 @@ void BLEManager::initialDeviceInfoTask(void *pvParameters)
     }
 
     bleManager->sendFirmwareVersion();
+    bleManager->sendCalibrationConfig();
 
     vTaskDelete(NULL);
 }
@@ -583,6 +719,26 @@ void BLEManager::WriteCallbacks::onWrite(BLECharacteristic *pCharacteristic)
         GameSettings::setAutoLedOffEnabled(cmdData.value != 0);
         break;
 
+    case BLECommand::CALIB_GET:
+        bleManager->sendCalibrationConfig();
+        break;
+
+    case BLECommand::CALIB_SET:
+        bleManager->handleCalibSetCommand(value);
+        break;
+
+    case BLECommand::CALIB_RESET:
+        bleManager->handleCalibResetCommand();
+        break;
+
+    case BLECommand::PEAK_START:
+        bleManager->handlePeakStartCommand();
+        break;
+
+    case BLECommand::PEAK_STOP:
+        bleManager->handlePeakStopCommand();
+        break;
+
 #ifdef BOARD_ESP32S3
     case BLECommand::BLE_STATUS:
         bleManager->logBLEConnectionInfo();
@@ -629,6 +785,16 @@ void BLEManager::ServerCallbacks::onDisconnect(BLEServer *pServer)
     if (bleManager->powerManager)
     {
         bleManager->powerManager->setConnected(false);
+    }
+    // Safety: drop out of measurement mode if active so the cel doesn't
+    // stay yellow / non-game forever after the phone walks away.
+    if (bleManager->piezoSensor && bleManager->piezoSensor->isInMeasurement())
+    {
+        bleManager->piezoSensor->stopMeasurement();
+        if (bleManager->ledController)
+        {
+            bleManager->ledController->turnOff();
+        }
     }
 #ifdef BOARD_ESP32S3
     // Restart extended advertising if available
