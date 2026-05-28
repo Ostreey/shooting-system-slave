@@ -5,7 +5,7 @@
 #ifdef BOARD_ESP32S3
 #define FIRMWARE_VERSION "1.0.6-esp32s3"
 #else
-#define FIRMWARE_VERSION "1.0.6-esp32"
+#define FIRMWARE_VERSION "1.0.7-esp32"
 #endif
 
 // BLE Configuration
@@ -55,7 +55,7 @@
 // GPIO Pin Definitions
 #ifdef BOARD_ESP32S3
 #define LED_BLUE_PIN 14
-#define LED_GREEN_PIN 12
+#define LED_GREEN_PIN 2
 #define LED_RED_PIN 1
 #define WAKE_UP_BUTTON_PIN 13
 #define BATTERY_PIN 3 // ADC1 Channel 0 (ESP32-S3 compatible)
