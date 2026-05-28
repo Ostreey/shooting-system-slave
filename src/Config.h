@@ -1,11 +1,12 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-// Firmware version — includes board suffix so the Android app can select the correct binary
+// Firmware version — bump FIRMWARE_VERSION_BASE only; board suffix is appended automatically
+#define FIRMWARE_VERSION_BASE "1.0.7"
 #ifdef BOARD_ESP32S3
-#define FIRMWARE_VERSION "1.0.6-esp32s3"
+#define FIRMWARE_VERSION FIRMWARE_VERSION_BASE "-esp32s3"
 #else
-#define FIRMWARE_VERSION "1.0.7-esp32"
+#define FIRMWARE_VERSION FIRMWARE_VERSION_BASE "-esp32"
 #endif
 
 // BLE Configuration
