@@ -2,7 +2,7 @@
 #define CONFIG_H
 
 // Firmware version — bump FIRMWARE_VERSION_BASE only; board suffix is appended automatically
-#define FIRMWARE_VERSION_BASE "1.0.7"
+#define FIRMWARE_VERSION_BASE "1.0.8"
 #ifdef BOARD_ESP32S3
 #define FIRMWARE_VERSION FIRMWARE_VERSION_BASE "-esp32s3"
 #else

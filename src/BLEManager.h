@@ -122,6 +122,7 @@ public:
         ServerCallbacks(BLEManager *manager) : bleManager(manager) {}
         void onConnect(BLEServer *pServer) override;
         void onDisconnect(BLEServer *pServer) override;
+        void onDisconnect(BLEServer *pServer, esp_ble_gatts_cb_param_t *param) override;
     };
 
 private:

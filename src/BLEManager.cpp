@@ -764,6 +764,16 @@ void BLEManager::ServerCallbacks::onConnect(BLEServer *pServer)
     {
         bleManager->powerManager->setConnected(true);
     }
+
+    pServer->getAdvertising()->stop();
+#ifdef BOARD_ESP32S3
+    if (bleManager->pMultiAdvertising)
+    {
+        uint8_t extAdvInst[] = {0};
+        bleManager->pMultiAdvertising->stop(1, extAdvInst);
+        Serial.println("Advertising stopped while connected (legacy + extended)");
+    }
+#endif
     if (bleManager->ledController)
     {
         bleManager->ledController->blinkColor(255, 255, 255);
@@ -775,7 +785,7 @@ void BLEManager::ServerCallbacks::onConnect(BLEServer *pServer)
 #endif
 
     vTaskDelay(1000 / portTICK_PERIOD_MS);
-    xTaskCreate(initialDeviceInfoTask, "InitDeviceInfo", 2048, bleManager, 1, NULL);
+    xTaskCreate(initialDeviceInfoTask, "InitDeviceInfo", 8192, bleManager, 1, NULL);
 }
 
 void BLEManager::ServerCallbacks::onDisconnect(BLEServer *pServer)
@@ -805,6 +815,12 @@ void BLEManager::ServerCallbacks::onDisconnect(BLEServer *pServer)
 #endif
     // Always restart legacy advertising for compatibility
     pServer->getAdvertising()->start();
+}
+
+void BLEManager::ServerCallbacks::onDisconnect(BLEServer *pServer, esp_ble_gatts_cb_param_t *param)
+{
+    Serial.print("Disconnect reason: 0x");
+    Serial.println(param->disconnect.reason, HEX);
 }
 
 #ifdef BOARD_ESP32S3
