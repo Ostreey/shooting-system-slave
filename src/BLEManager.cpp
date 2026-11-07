@@ -5,6 +5,8 @@
 #include "GameSettings.h"
 #include "PiezoSensor.h"
 #include "CalibrationStore.h"
+#include "LedModuleStore.h"
+#include <string.h>
 #ifdef BOARD_ESP32S3
 #include <string.h>
 #include <esp_gap_ble_api.h>
@@ -18,7 +20,7 @@ BLEManager::BLEManager(LEDController *leds, PowerManager *power, OTAManager *ota
       pMultiAdvertising(nullptr),
 #endif
       deviceConnected(false), isInitialized(false),
-      hitTime(0), ledStatusTaskHandle(nullptr)
+      hitTime(0), ledStatusTaskHandle(nullptr), commandQueue(nullptr), commandTaskHandle(nullptr)
 {
 }
 
@@ -27,6 +29,16 @@ bool BLEManager::begin()
     if (isInitialized)
     {
         return true;
+    }
+
+    // The consumer exists before the first write can arrive.
+    commandQueue = xQueueCreate(COMMAND_QUEUE_DEPTH, sizeof(QueuedCommand));
+    if (commandQueue == nullptr ||
+        xTaskCreatePinnedToCore(commandTask, "BLECommands", COMMAND_TASK_STACK, this, 3,
+                                &commandTaskHandle, APP_CPU_NUM) != pdPASS)
+    {
+        Serial.println("Failed to start BLE command task");
+        return false;
     }
 
     // Initialize BLE
@@ -314,135 +326,30 @@ void BLEManager::sendPeakValue(uint16_t peakValue)
     Serial.println("Peak sent: " + payload);
 }
 
+void BLEManager::sendLedModuleState()
+{
+    // Sent on the calibration characteristic so no new UUID is needed. The released app's
+    // dispatcher there only acts on "calib:" and "peak:" and logs anything else, so this payload
+    // never reaches CalibrationConfig.parse in an old app.
+    if (!calibrationCharacteristic || !ledController || !deviceConnected)
+    {
+        return;
+    }
+
+    String payload = String("ledswap:") + (ledController->isRedGreenSwapped() ? "1" : "0");
+    calibrationCharacteristic->setValue(payload.c_str());
+    calibrationCharacteristic->notify();
+    Serial.println("LED module state sent: " + payload);
+}
+
 BLECommandData BLEManager::parseCommand(const std::string &value)
 {
-    BLECommandData result = {BLECommand::UNKNOWN, 0};
-
-    // RGB color command: rgb:255,0,0
-    if (value.substr(0, 4) == "rgb:")
-    {
-        result.command = BLECommand::SET_RGB_COLOR;
-        result.value = 0;
-        return result;
-    }
-
-    // Blink color command: blinkrgb:255,0,0
-    if (value.substr(0, 9) == "blinkrgb:")
-    {
-        result.command = BLECommand::BLINK_COLOR;
-        result.value = 0;
-        return result;
-    }
-
-    // Predefined color command: color:red, color:green, etc.
-    if (value.substr(0, 6) == "color:")
-    {
-        result.command = BLECommand::SET_COLOR;
-        result.value = 0;
-        return result;
-    }
-
-    // Individual channel commands: r:255, g:128, b:0
-    if (value.substr(0, 2) == "r:")
-    {
-        result.command = BLECommand::SET_RED;
-        result.value = std::stoi(value.substr(2));
-        return result;
-    }
-    else if (value.substr(0, 2) == "g:")
-    {
-        result.command = BLECommand::SET_GREEN;
-        result.value = std::stoi(value.substr(2));
-        return result;
-    }
-    else if (value.substr(0, 2) == "b:")
-    {
-        result.command = BLECommand::SET_BRIGHTNESS;
-        result.value = std::stoi(value.substr(2));
-        return result;
-    }
-
-    if (value.substr(0, 8) == "autooff:")
-    {
-        result.command = BLECommand::SET_AUTO_OFF;
-        result.value = std::stoi(value.substr(8));
-        return result;
-    }
-
-    // Calibration commands
-    if (value == "calib:get")
-    {
-        result.command = BLECommand::CALIB_GET;
-        return result;
-    }
-    if (value == "calib:reset")
-    {
-        result.command = BLECommand::CALIB_RESET;
-        return result;
-    }
-    if (value.substr(0, 10) == "calib:set:")
-    {
-        result.command = BLECommand::CALIB_SET;
-        return result;
-    }
-
-    // Peak measurement mode commands
-    if (value == "peak:start")
-    {
-        result.command = BLECommand::PEAK_START;
-        return result;
-    }
-    if (value == "peak:stop")
-    {
-        result.command = BLECommand::PEAK_STOP;
-        return result;
-    }
-
-    // Handle valueless commands
-    if (value == "start")
-        result.command = BLECommand::START;
-    else if (value.substr(0, 6) == "start:")
-    {
-        result.command = BLECommand::START;
-        result.value = 0;
-    }
-    else if (value == "sleep")
-        result.command = BLECommand::SLEEP;
-    else if (value == "game1")
-        result.command = BLECommand::GAME1;
-#ifdef BOARD_ESP32S3
-    else if (value == "ble_status")
-        result.command = BLECommand::BLE_STATUS;
-    else if (value == "ble_phy")
-        result.command = BLECommand::BLE_PHY_INFO;
-#endif
-    else if (value == "off")
-    {
-        result.command = BLECommand::SET_COLOR;
-        result.value = 0;
-    }
-
-    return result;
+    return BleCommandParser::parse(value);
 }
 
 bool BLEManager::parseRgbValues(const std::string &rgbStr, int &red, int &green, int &blue)
 {
-    size_t firstComma = rgbStr.find(',');
-    size_t secondComma = rgbStr.find(',', firstComma + 1);
-
-    if (firstComma != std::string::npos && secondComma != std::string::npos)
-    {
-        red = std::stoi(rgbStr.substr(0, firstComma));
-        green = std::stoi(rgbStr.substr(firstComma + 1, secondComma - firstComma - 1));
-        blue = std::stoi(rgbStr.substr(secondComma + 1));
-
-        // Constrain values to 0-255 range
-        red = constrain(red, 0, 255);
-        green = constrain(green, 0, 255);
-        blue = constrain(blue, 0, 255);
-        return true;
-    }
-    return false;
+    return BleCommandParser::parseRgb(rgbStr, red, green, blue);
 }
 
 void BLEManager::handleRGBCommand(const std::string &value)
@@ -533,25 +440,23 @@ void BLEManager::handleCalibSetCommand(const std::string &value)
         return;
     }
 
-    try
+    int thr = 0;
+    int deb = 0;
+    if (!BleCommandParser::parseInt(payload.substr(0, sep), thr) ||
+        !BleCommandParser::parseInt(payload.substr(sep + 1), deb))
     {
-        int thr = std::stoi(payload.substr(0, sep));
-        int deb = std::stoi(payload.substr(sep + 1));
+        Serial.println("Failed to parse calib:set values");
+        return;
+    }
 
-        if (piezoSensor)
-        {
-            piezoSensor->setThreshold(static_cast<uint16_t>(thr));
-            piezoSensor->setDebounceMs(static_cast<uint16_t>(deb));
-            CalibrationStore::saveThreshold(piezoSensor->getThreshold());
-            CalibrationStore::saveDebounceMs(piezoSensor->getDebounceMs());
-        }
-        sendCalibrationConfig();
-    }
-    catch (const std::exception &e)
+    if (piezoSensor)
     {
-        Serial.print("Failed to parse calib:set values: ");
-        Serial.println(e.what());
+        piezoSensor->setThreshold(static_cast<uint16_t>(thr));
+        piezoSensor->setDebounceMs(static_cast<uint16_t>(deb));
+        CalibrationStore::saveThreshold(piezoSensor->getThreshold());
+        CalibrationStore::saveDebounceMs(piezoSensor->getDebounceMs());
     }
+    sendCalibrationConfig();
 }
 
 void BLEManager::handleCalibResetCommand()
@@ -590,6 +495,29 @@ void BLEManager::handlePeakStopCommand()
         ledController->turnOff();
     }
     Serial.println("Peak measurement mode: STOP");
+}
+
+void BLEManager::handleLedSwapSetCommand(bool swapped)
+{
+    // The setting is applied only once NVS has confirmed it, so what the user sees now is what the
+    // target shows after a restart. A failed write leaves the old setting and the reply carries
+    // it, which the app shows as a mismatch instead of a silent success.
+    if (LedModuleStore::saveRedGreenSwapped(swapped))
+    {
+        if (ledController)
+        {
+            ledController->setRedGreenSwapped(swapped);
+        }
+    }
+    sendLedModuleState();
+}
+
+void BLEManager::handleLedTestCommand(bool boardRedPin)
+{
+    if (ledController)
+    {
+        ledController->setRawTestColor(boardRedPin);
+    }
 }
 
 void BLEManager::startLedStatusTask()
@@ -652,7 +580,54 @@ void BLEManager::ledStatusTask(void *pvParameters)
 // WriteCallbacks Implementation
 void BLEManager::WriteCallbacks::onWrite(BLECharacteristic *pCharacteristic)
 {
-    std::string value = pCharacteristic->getValue();
+    bleManager->enqueueCommand(pCharacteristic->getValue());
+}
+
+void BLEManager::enqueueCommand(const std::string &value)
+{
+    // Runs in the BTC task: no printf here except on the failure paths.
+    if (value.size() >= COMMAND_MAX_LEN)
+    {
+        Serial.print("COMMAND DROPPED (too long): ");
+        Serial.println(value.substr(0, COMMAND_MAX_LEN).c_str());
+        return;
+    }
+
+    QueuedCommand item;
+    item.length = static_cast<uint8_t>(value.size());
+    memcpy(item.data, value.data(), value.size());
+
+    if (xQueueSend(commandQueue, &item, 0) != pdTRUE)
+    {
+        Serial.print("COMMAND DROPPED (queue full): ");
+        Serial.println(value.c_str());
+    }
+}
+
+void BLEManager::commandTask(void *pvParameters)
+{
+    BLEManager *bleManager = static_cast<BLEManager *>(pvParameters);
+    QueuedCommand item;
+
+    for (;;)
+    {
+        if (xQueueReceive(bleManager->commandQueue, &item, portMAX_DELAY) != pdTRUE)
+        {
+            continue;
+        }
+
+        bleManager->executeCommand(std::string(item.data, item.length));
+
+        UBaseType_t freeBytes = uxTaskGetStackHighWaterMark(nullptr);
+        if (freeBytes < COMMAND_STACK_WARN_BYTES)
+        {
+            Serial.printf("WARNING: command task stack low, %u bytes left\n", (unsigned)freeBytes);
+        }
+    }
+}
+
+void BLEManager::executeCommand(const std::string &value)
+{
     Serial.print("Received value: ");
     Serial.println(value.c_str());
 
@@ -661,57 +636,57 @@ void BLEManager::WriteCallbacks::onWrite(BLECharacteristic *pCharacteristic)
     switch (cmdData.command)
     {
     case BLECommand::START:
-        bleManager->onPiezoHit();
+        onPiezoHit();
         if (value.substr(0, 6) == "start:")
         {
-            bleManager->handleStartColorCommand(value);
+            handleStartColorCommand(value);
         }
         break;
 
     case BLECommand::SLEEP:
-        if (bleManager->powerManager)
+        if (powerManager)
         {
-            bleManager->powerManager->goToDeepSleep(SleepReason::Command);
+            powerManager->goToDeepSleep(SleepReason::Command);
         }
         break;
 
     case BLECommand::SET_BRIGHTNESS:
-        if (bleManager->ledController)
+        if (ledController)
         {
-            bleManager->ledController->setBrightness(constrain(cmdData.value, 0, 255));
+            ledController->setBrightness(constrain(cmdData.value, 0, 255));
         }
         break;
 
     case BLECommand::SET_RGB_COLOR:
-        bleManager->handleRGBCommand(value);
+        handleRGBCommand(value);
         break;
 
     case BLECommand::BLINK_COLOR:
-        bleManager->handleBlinkColorCommand(value);
+        handleBlinkColorCommand(value);
         break;
 
     case BLECommand::SET_COLOR:
-        bleManager->handleColorCommand(value);
+        handleColorCommand(value);
         break;
 
     case BLECommand::SET_RED:
-        if (bleManager->ledController)
+        if (ledController)
         {
-            bleManager->ledController->setRedChannel(constrain(cmdData.value, 0, 255));
+            ledController->setRedChannel(constrain(cmdData.value, 0, 255));
         }
         break;
 
     case BLECommand::SET_GREEN:
-        if (bleManager->ledController)
+        if (ledController)
         {
-            bleManager->ledController->setGreenChannel(constrain(cmdData.value, 0, 255));
+            ledController->setGreenChannel(constrain(cmdData.value, 0, 255));
         }
         break;
 
     case BLECommand::SET_BLUE:
-        if (bleManager->ledController)
+        if (ledController)
         {
-            bleManager->ledController->setBlueChannel(constrain(cmdData.value, 0, 255));
+            ledController->setBlueChannel(constrain(cmdData.value, 0, 255));
         }
         break;
 
@@ -720,32 +695,56 @@ void BLEManager::WriteCallbacks::onWrite(BLECharacteristic *pCharacteristic)
         break;
 
     case BLECommand::CALIB_GET:
-        bleManager->sendCalibrationConfig();
+        sendCalibrationConfig();
         break;
 
     case BLECommand::CALIB_SET:
-        bleManager->handleCalibSetCommand(value);
+        handleCalibSetCommand(value);
         break;
 
     case BLECommand::CALIB_RESET:
-        bleManager->handleCalibResetCommand();
+        handleCalibResetCommand();
         break;
 
     case BLECommand::PEAK_START:
-        bleManager->handlePeakStartCommand();
+        // Before the queue the disconnect handler could never run ahead of a pending write; now it
+        // can, and starting measurement after it would leave the sensor deaf to hits until the
+        // next peak:stop. Checked again after the start: onDisconnect (BTC task, other core) clears
+        // deviceConnected before it looks at isInMeasurement(), so a disconnect landing between the
+        // first check and the start is either seen here or sees the measurement itself.
+        if (deviceConnected)
+        {
+            handlePeakStartCommand();
+            if (!deviceConnected)
+            {
+                handlePeakStopCommand();
+            }
+        }
         break;
 
     case BLECommand::PEAK_STOP:
-        bleManager->handlePeakStopCommand();
+        handlePeakStopCommand();
+        break;
+
+    case BLECommand::LED_SWAP_GET:
+        sendLedModuleState();
+        break;
+
+    case BLECommand::LED_SWAP_SET:
+        handleLedSwapSetCommand(cmdData.value != 0);
+        break;
+
+    case BLECommand::LED_TEST:
+        handleLedTestCommand(cmdData.value != 0);
         break;
 
 #ifdef BOARD_ESP32S3
     case BLECommand::BLE_STATUS:
-        bleManager->logBLEConnectionInfo();
+        logBLEConnectionInfo();
         break;
 
     case BLECommand::BLE_PHY_INFO:
-        bleManager->logBLEPHYInfo();
+        logBLEPHYInfo();
         break;
 #endif
 

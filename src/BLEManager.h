@@ -8,42 +8,12 @@
 #include <BLE2902.h>
 #include <BLEAdvertising.h>
 #include "Config.h"
+#include "BleCommandParser.h"
 
 class LEDController;
 class PowerManager;
 class OTAManager;
 class PiezoSensor;
-
-enum class BLECommand
-{
-    UNKNOWN,
-    START,
-    SLEEP,
-    GAME1,
-    SET_BRIGHTNESS,
-    SET_RGB_COLOR,
-    SET_COLOR,
-    SET_RED,
-    SET_GREEN,
-    SET_BLUE,
-    SET_AUTO_OFF,
-    BLINK_COLOR,
-    CALIB_GET,
-    CALIB_SET,
-    CALIB_RESET,
-    PEAK_START,
-    PEAK_STOP,
-#ifdef BOARD_ESP32S3
-    BLE_STATUS,
-    BLE_PHY_INFO,
-#endif
-};
-
-struct BLECommandData
-{
-    BLECommand command;
-    int value;
-};
 
 class BLEManager
 {
@@ -64,7 +34,7 @@ private:
     BLEMultiAdvertising *pMultiAdvertising;
 #endif
 
-    bool deviceConnected;
+    volatile bool deviceConnected;
     bool isInitialized;
     unsigned long hitTime;
 
@@ -83,6 +53,7 @@ public:
     void sendFirmwareVersion();
     void sendCalibrationConfig();
     void sendPeakValue(uint16_t peakValue);
+    void sendLedModuleState();
 
     // Hit detection
     void onPiezoHit();
@@ -90,9 +61,13 @@ public:
     // Command parsing
     static BLECommandData parseCommand(const std::string &value);
 
+    // Runs one command from the piezo characteristic. Called only from the command task.
+    void executeCommand(const std::string &value);
+
     // Task functions
     static void initialDeviceInfoTask(void *pvParameters);
     static void ledStatusTask(void *pvParameters);
+    static void commandTask(void *pvParameters);
     void startLedStatusTask();
 
 #ifdef BOARD_ESP32S3
@@ -128,6 +103,29 @@ public:
 private:
     TaskHandle_t ledStatusTaskHandle;
 
+    // Commands written to the piezo characteristic are only copied into this queue by the write
+    // callback and run in their own task. The callback runs in the Bluedroid BTC task, whose
+    // 3072-byte stack is fixed in the precompiled Arduino SDK: running ledswap:get there overflowed
+    // it (2026-11-07, "Stack canary watchpoint triggered (BTC_TASK)", reset mid-session). The BTC
+    // task also sends the write response only after the callback returns, so a 1.2 s blinkrgb in
+    // the callback made the phone drop the next write. One producer, one consumer: commands run
+    // strictly in the order they were written.
+    static constexpr size_t COMMAND_MAX_LEN = 64;
+    static constexpr UBaseType_t COMMAND_QUEUE_DEPTH = 16;
+    // Deepest paths run here now instead of in BTC: NVS writes (calib:set, ledswap) and the whole
+    // sleep sequence (sleep command). Twice the BTC stack that overflowed; the high-water mark is
+    // logged when it gets close, so a regression shows up in Serial, not as a reset.
+    static constexpr uint32_t COMMAND_TASK_STACK = 6144;
+    static constexpr UBaseType_t COMMAND_STACK_WARN_BYTES = 1024;
+    struct QueuedCommand
+    {
+        uint8_t length;
+        char data[COMMAND_MAX_LEN];
+    };
+    QueueHandle_t commandQueue;
+    TaskHandle_t commandTaskHandle;
+    void enqueueCommand(const std::string &value);
+
     // Helper methods for command processing
     void handleRGBCommand(const std::string &value);
     void handleColorCommand(const std::string &value);
@@ -137,6 +135,8 @@ private:
     void handleCalibResetCommand();
     void handlePeakStartCommand();
     void handlePeakStopCommand();
+    void handleLedSwapSetCommand(bool swapped);
+    void handleLedTestCommand(bool boardRedPin);
 
     // Common RGB parsing helper
     bool parseRgbValues(const std::string &rgbStr, int &red, int &green, int &blue);

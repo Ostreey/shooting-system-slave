@@ -13,6 +13,21 @@ private:
     int requestedGreen;
     int requestedBlue;
     volatile uint32_t outputWrites;
+    volatile bool redGreenSwapped;
+
+    enum class Led : uint8_t
+    {
+        Red,
+        Green,
+        Blue,
+    };
+
+    // The only place a logical colour becomes a PWM channel. Every ledcWrite in this class goes
+    // through it, so the red/green swap of the newer LED modules covers every colour: the ones
+    // sent by the app and the ones the target lights on its own.
+    static uint8_t pwmChannel(Led led, bool swapped);
+
+    void writeAll(int finalRed, int finalGreen, int finalBlue);
 
 public:
     LEDController();
@@ -57,6 +72,15 @@ public:
 
     // Power control
     void enablePower(bool enable);
+
+    // Red/green swap of the newer external LED modules. begin() loads it from NVS before the
+    // first colour is written. Every call re-applies the current colour with the given mapping.
+    bool isRedGreenSwapped() const { return redGreenSwapped; }
+    void setRedGreenSwapped(bool swapped);
+
+    // Colour test for the app: drives the board's own red (or green) output, ignoring the swap,
+    // so what the user reports depends only on the module, never on the setting stored before.
+    void setRawTestColor(bool boardRedPin);
 };
 
 #endif // LED_CONTROLLER_H
