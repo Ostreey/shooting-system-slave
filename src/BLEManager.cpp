@@ -671,7 +671,7 @@ void BLEManager::WriteCallbacks::onWrite(BLECharacteristic *pCharacteristic)
     case BLECommand::SLEEP:
         if (bleManager->powerManager)
         {
-            bleManager->powerManager->goToDeepSleep();
+            bleManager->powerManager->goToDeepSleep(SleepReason::Command);
         }
         break;
 

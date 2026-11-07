@@ -1,6 +1,8 @@
 #include "LEDController.h"
 
-LEDController::LEDController() : brightness(255), isInitialized(false)
+LEDController::LEDController() : brightness(255), isInitialized(false),
+                                 requestedRed(0), requestedGreen(0), requestedBlue(0),
+                                 outputWrites(0)
 {
 }
 
@@ -48,6 +50,11 @@ void LEDController::setLeds(bool on)
     if (!isInitialized)
         return;
 
+    outputWrites = outputWrites + 1;
+    requestedRed = on ? 255 : 0;
+    requestedGreen = requestedRed;
+    requestedBlue = requestedRed;
+
     if (on)
     {
         ledcWrite(PWM_CHANNEL_RED, brightness);
@@ -67,6 +74,11 @@ void LEDController::setRgbColor(int red, int green, int blue)
     if (!isInitialized)
         return;
 
+    outputWrites = outputWrites + 1;
+    requestedRed = red;
+    requestedGreen = green;
+    requestedBlue = blue;
+
     // Apply global brightness to each color channel
     int finalRed = (red * brightness) / 255;
     int finalGreen = (green * brightness) / 255;
@@ -85,6 +97,8 @@ void LEDController::setRedChannel(int value)
     if (!isInitialized)
         return;
 
+    outputWrites = outputWrites + 1;
+    requestedRed = value;
     int finalValue = (value * brightness) / 255;
     ledcWrite(PWM_CHANNEL_RED, finalValue);
     Serial.printf("Red channel set to: %d (brightness=%d)\n", finalValue, brightness);
@@ -95,6 +109,8 @@ void LEDController::setGreenChannel(int value)
     if (!isInitialized)
         return;
 
+    outputWrites = outputWrites + 1;
+    requestedGreen = value;
     int finalValue = (value * brightness) / 255;
     ledcWrite(PWM_CHANNEL_GREEN, finalValue);
     Serial.printf("Green channel set to: %d (brightness=%d)\n", finalValue, brightness);
@@ -105,6 +121,8 @@ void LEDController::setBlueChannel(int value)
     if (!isInitialized)
         return;
 
+    outputWrites = outputWrites + 1;
+    requestedBlue = value;
     int finalValue = (value * brightness) / 255;
     ledcWrite(PWM_CHANNEL_BLUE, finalValue);
     Serial.printf("Blue channel set to: %d (brightness=%d)\n", finalValue, brightness);
